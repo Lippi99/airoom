@@ -161,14 +161,17 @@ def paint_material(art_img, weave_img):
     nmap.inputs["Strength"].default_value = 0.25
     links.new(ntex.outputs["Color"], nmap.inputs["Color"])
     links.new(nmap.outputs["Normal"], bsdf.inputs["Normal"])
-    bsdf.inputs["Roughness"].default_value = 0.55  # acrylic/oil with a satin varnish
+    bsdf.inputs["Roughness"].default_value = 0.7  # the paint itself
+    # Satin varnish, smooth over the canvas weave (no coat normal); KHR_materials_clearcoat.
+    mk.clearcoat(bsdf, weight=0.35, roughness=0.3)
     return mat
 
 
 def frame_material():
     mat, bsdf = mk.principled("BlackFrame")
     bsdf.inputs["Base Color"].default_value = (0.012, 0.012, 0.012, 1)
-    bsdf.inputs["Roughness"].default_value = 0.4  # satin black lacquer
+    bsdf.inputs["Roughness"].default_value = 0.5
+    mk.clearcoat(bsdf, weight=0.8, roughness=0.2)  # satin black lacquer
     return mat
 
 

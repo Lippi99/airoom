@@ -151,14 +151,15 @@ def wood_images(directory, along=2048, across=512, seed=8):
 
 def linen_material(color_img, normal_img):
     mat, bsdf = mk.textured_material("Linen", color_img, normal_img, normal_strength=0.5, roughness=0.9)
-    mk.set_input(bsdf, "Sheen Weight", 0.25)
-    mk.set_input(bsdf, "Sheen Roughness", 0.6)
-    mk.set_input(bsdf, "Sheen Tint", (1.0, 0.97, 0.92, 1.0))
+    # Soft fuzz at grazing angles (exported as KHR_materials_sheen).
+    mk.sheen(bsdf, weight=0.25, tint=(1.0, 0.97, 0.92), roughness=0.6)
     return mat
 
 
 def wood_material(color_img, normal_img):
-    mat, _ = mk.textured_material("Wood", color_img, normal_img, normal_strength=0.3, roughness=0.45)
+    mat, bsdf = mk.textured_material("Wood", color_img, normal_img, normal_strength=0.3, roughness=0.55)
+    # Thin oiled/satin finish over the grain (exported as KHR_materials_clearcoat).
+    mk.clearcoat(bsdf, weight=0.5, roughness=0.3)
     return mat
 
 

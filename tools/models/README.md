@@ -98,7 +98,7 @@ compresses badly as PNG).
 - Darker areas slightly more saturated: multiply R, G, B by `shade`, `shade**1.15`,
   `shade**1.3`.
 - Weak normal map (height from fibers + nap, strength 0.05; material normal strength
-  0.35), roughness 0.85, sheen weight 0.3 tinted toward the fabric color.
+  0.35), roughness 0.85, `mk.sheen` weight 0.3 tinted toward the fabric color.
 
 **Woven fabric** (`fabric_images` in `swivel_tub_armchair.py`): plain weave with per-crossing
 light/dark yarn mix (melange), 6 cm tile.
@@ -109,7 +109,25 @@ touch lighter than warp; also used for the webbing straps.
 
 **Wood** (`wood_images` in `strap_lounge_armchair.py`): 2048 × 512 px over 60 × 15 cm,
 grain along the long side. Straight grain: growth lines wander by ≤ ~2 mm, line contrast
-≤ ~6%, sparse pores streaked along the grain; satin roughness 0.45.
+≤ ~6%, sparse pores streaked along the grain; roughness 0.55 under a satin clearcoat
+(`mk.clearcoat` weight 0.5, roughness 0.3).
+
+**Sheen and clearcoat** (glTF `KHR_materials_sheen` / `KHR_materials_clearcoat`, a few bytes
+each, no textures):
+
+- **Sheen** = fabric fuzz, the soft rim glow microfibers give at grazing angles. Use it on
+  every fabric: suede/velvet ~0.3, woven ~0.35 (white tint), linen ~0.25. Always set it
+  with `mk.sheen(bsdf, weight, tint, roughness)`: Blender's glTF exporter writes Sheen Tint
+  as the sheen color and **ignores Sheen Weight**, so setting the sockets directly exports
+  the sheen at full strength (3-4× brighter on the phone than in the previews).
+- **Clearcoat** = a varnish/lacquer layer: a second, sharper reflection over the grain.
+  Use it on lacquered, oiled or varnished wood (weight 0.5-0.6, roughness 0.25-0.3, base
+  roughness ~0.55), varnished paintings (~0.35) and lacquered frames (~0.8, roughness 0.2),
+  via `mk.clearcoat(bsdf, weight, roughness)`. No coat normal: the varnish stays smooth
+  over the texture, like the real thing.
+- Never both on one material: Filament's (Android) sheen shader has no clearcoat.
+- Android (Filament 1.68 in SceneView 2.3.4) renders both. iOS: the USDZ preview surface
+  has clearcoat but no sheen, so fabrics there look as they would without it.
 
 **What did not work (don't repeat):**
 

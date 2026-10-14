@@ -136,6 +136,23 @@ def set_input(bsdf, name, value):
         bsdf.inputs[name].default_value = value
 
 
+def sheen(bsdf, weight, tint, roughness):
+    """Fabric fuzz: the soft glow microfibers give at grazing angles (KHR_materials_sheen).
+    The glTF exporter writes Sheen Tint as the sheen color and ignores Sheen Weight, so the
+    weight is folded into the tint (weight 1): Blender previews and the GLB then agree."""
+    set_input(bsdf, "Sheen Weight", 1.0)
+    set_input(bsdf, "Sheen Tint", (*(weight * c for c in tint[:3]), 1.0))
+    set_input(bsdf, "Sheen Roughness", roughness)
+
+
+def clearcoat(bsdf, weight, roughness):
+    """A clear varnish/lacquer layer over the material (KHR_materials_clearcoat): a second,
+    sharper reflection on top of e.g. wood grain. Avoid on materials with sheen: Filament's
+    sheen shader variant has no clearcoat."""
+    set_input(bsdf, "Coat Weight", weight)
+    set_input(bsdf, "Coat Roughness", roughness)
+
+
 def textured_material(name, color_img, normal_img, normal_strength, roughness):
     mat, bsdf = principled(name)
     nodes, links = mat.node_tree.nodes, mat.node_tree.links

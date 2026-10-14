@@ -138,14 +138,14 @@ def wood_images(directory, width=256, height=1024, seed=5):
 def suede_material(color_img, normal_img):
     mat, bsdf = mk.textured_material("Microsuede", color_img, normal_img, normal_strength=0.35, roughness=0.85)
     # Brushed-nap highlight at grazing angles (exported as KHR_materials_sheen).
-    mk.set_input(bsdf, "Sheen Weight", 0.3)
-    mk.set_input(bsdf, "Sheen Roughness", 0.45)
-    mk.set_input(bsdf, "Sheen Tint", (0.95, 0.62, 0.42, 1.0))
+    mk.sheen(bsdf, weight=0.3, tint=(0.95, 0.62, 0.42), roughness=0.45)
     return mat
 
 
 def oak_material(color_img, normal_img):
-    mat, _ = mk.textured_material("Oak", color_img, normal_img, normal_strength=0.4, roughness=0.5)
+    mat, bsdf = mk.textured_material("Oak", color_img, normal_img, normal_strength=0.4, roughness=0.55)
+    # Satin lacquer over the grain (exported as KHR_materials_clearcoat).
+    mk.clearcoat(bsdf, weight=0.6, roughness=0.25)
     return mat
 
 

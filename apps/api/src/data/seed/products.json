@@ -106,7 +106,7 @@
     "model": {
       "glbUrl": "/static/models/swivel-tub-armchair/model.glb",
       "usdzUrl": "/static/models/swivel-tub-armchair/model.usdz",
-      "sizeBytes": 1873776
+      "sizeBytes": 1873836
     },
     "productUrl": "https://casa-atelier.example.com/products/chair-sol",
     "active": true
@@ -128,7 +128,7 @@
     "model": {
       "glbUrl": "/static/models/tub-club-armchair/model.glb",
       "usdzUrl": "/static/models/tub-club-armchair/model.usdz",
-      "sizeBytes": 4036616
+      "sizeBytes": 4052600
     },
     "productUrl": "https://casa-atelier.example.com/products/chair-cora",
     "active": true
@@ -150,7 +150,7 @@
     "model": {
       "glbUrl": "/static/models/strap-lounge-armchair/model.glb",
       "usdzUrl": "/static/models/strap-lounge-armchair/model.usdz",
-      "sizeBytes": 4237688
+      "sizeBytes": 4237880
     },
     "productUrl": "https://northwood.example.com/products/chair-nara",
     "active": true
@@ -262,7 +262,7 @@
     "model": {
       "glbUrl": "/static/models/framed-painting-knights/model.glb",
       "usdzUrl": "/static/models/framed-painting-knights/model.usdz",
-      "sizeBytes": 420008
+      "sizeBytes": 420292
     },
     "productUrl": "https://casa-atelier.example.com/products/art-knights",
     "active": true

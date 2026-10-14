@@ -117,9 +117,7 @@ def fabric_images(directory, size=1024, threads=32, seed=7):
 def fabric_material(color_img, normal_img):
     mat, bsdf = mk.textured_material("Fabric", color_img, normal_img, normal_strength=0.5, roughness=0.95)
     # Soft fuzz at grazing angles (exported as KHR_materials_sheen).
-    mk.set_input(bsdf, "Sheen Weight", 0.35)
-    mk.set_input(bsdf, "Sheen Roughness", 0.6)
-    mk.set_input(bsdf, "Sheen Tint", (1.0, 1.0, 1.0, 1.0))
+    mk.sheen(bsdf, weight=0.35, tint=(1.0, 1.0, 1.0), roughness=0.6)
     return mat
 
 
