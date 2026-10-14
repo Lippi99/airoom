@@ -1,0 +1,9 @@
+{
+  "platforms": ["apple", "android"],
+  "apple": {
+    "modules": ["FurnitureARModule"]
+  },
+  "android": {
+    "modules": ["com.airoom.furniturear.FurnitureARModule"]
+  }
+}

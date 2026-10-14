@@ -1,0 +1,50 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+*.tsbuildinfo
+coverage/
+
+# Expo
+.expo/
+web-build/
+expo-env.d.ts
+.metro-health-check*
+
+# Generated native projects (Expo prebuild / CNG).
+# Our own native code lives in apps/mobile/modules/furniture-ar/ and IS versioned.
+apps/mobile/android/
+apps/mobile/ios/
+.kotlin/
+
+# Gradle/CMake output of our native modules (built through the generated Android project)
+apps/mobile/modules/*/android/build/
+.gradle/
+.cxx/
+
+# Python bytecode (Blender scripts in tools/models import modelkit.py)
+__pycache__/
+*.pyc
+
+# Environment files
+.env*
+
+# Signing material
+*.jks
+*.p8
+*.p12
+*.key
+*.pem
+*.mobileprovision
+
+# Logs
+npm-debug.*
+*.log
+
+# OS / editor
+.DS_Store
+Thumbs.db
+
+# Model build leftovers (textures, previews)
+_build/

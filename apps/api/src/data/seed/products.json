@@ -1,0 +1,270 @@
+[
+  {
+    "id": "prod-sofa-oslo",
+    "name": "Oslo 3-Seater Sofa",
+    "description": "Three-seat sofa with linen upholstery and oak legs.",
+    "categoryId": "cat-sofa",
+    "retailerId": "ret-north",
+    "price": 1899,
+    "currency": "USD",
+    "dimensions": {
+      "width": 2.19,
+      "depth": 1.02,
+      "height": 0.79
+    },
+    "thumbnailUrl": "https://placehold.co/600x600/png?text=Oslo%203-Seater%20Sofa",
+    "model": {
+      "glbUrl": "https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/main/Models/GlamVelvetSofa/glTF-Binary/GlamVelvetSofa.glb",
+      "usdzUrl": "https://cdn.example.com/models/sofa-oslo/model.usdz",
+      "sizeBytes": 3149844
+    },
+    "productUrl": "https://northwood.example.com/products/sofa-oslo",
+    "affiliateUrl": "https://northwood.example.com/products/sofa-oslo?ref=airoom",
+    "active": true
+  },
+  {
+    "id": "prod-sofa-luna",
+    "name": "Luna Corner Sofa",
+    "description": "L-shaped corner sofa with chaise, velvet finish.",
+    "categoryId": "cat-sofa",
+    "retailerId": "ret-casa",
+    "price": 3299,
+    "currency": "USD",
+    "dimensions": {
+      "width": 2.75,
+      "depth": 1.6,
+      "height": 0.78
+    },
+    "thumbnailUrl": "https://placehold.co/600x600/png?text=Luna%20Corner%20Sofa",
+    "model": {
+      "glbUrl": "https://cdn.example.com/models/sofa-luna/model.glb",
+      "usdzUrl": "https://cdn.example.com/models/sofa-luna/model.usdz",
+      "sizeBytes": 4900000
+    },
+    "productUrl": "https://casa-atelier.example.com/products/sofa-luna",
+    "active": true
+  },
+  {
+    "id": "prod-bed-haven",
+    "name": "Haven Queen Bed",
+    "description": "Queen bed frame with upholstered headboard.",
+    "categoryId": "cat-bed",
+    "retailerId": "ret-north",
+    "price": 1499,
+    "currency": "USD",
+    "dimensions": {
+      "width": 1.68,
+      "depth": 2.12,
+      "height": 1.1
+    },
+    "thumbnailUrl": "https://placehold.co/600x600/png?text=Haven%20Queen%20Bed",
+    "model": {
+      "glbUrl": "https://cdn.example.com/models/bed-haven/model.glb",
+      "usdzUrl": "https://cdn.example.com/models/bed-haven/model.usdz",
+      "sizeBytes": 4600000
+    },
+    "productUrl": "https://northwood.example.com/products/bed-haven",
+    "affiliateUrl": "https://northwood.example.com/products/bed-haven?ref=airoom",
+    "active": true
+  },
+  {
+    "id": "prod-chair-mira",
+    "name": "Mira Armchair",
+    "description": "Mid-century armchair with walnut frame.",
+    "categoryId": "cat-chair",
+    "retailerId": "ret-casa",
+    "price": 699,
+    "currency": "USD",
+    "dimensions": {
+      "width": 0.83,
+      "depth": 0.57,
+      "height": 0.69
+    },
+    "thumbnailUrl": "https://placehold.co/600x600/png?text=Mira%20Armchair",
+    "model": {
+      "glbUrl": "https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/main/Models/ChairDamaskPurplegold/glTF-Binary/ChairDamaskPurplegold.glb",
+      "usdzUrl": "https://cdn.example.com/models/chair-mira/model.usdz",
+      "sizeBytes": 2028924
+    },
+    "productUrl": "https://casa-atelier.example.com/products/chair-mira",
+    "active": true
+  },
+  {
+    "id": "prod-chair-sol",
+    "name": "Sol Swivel Armchair",
+    "description": "Swivel tub armchair in oatmeal woven fabric with a brushed steel four-leg base.",
+    "categoryId": "cat-chair",
+    "retailerId": "ret-casa",
+    "price": 899,
+    "currency": "USD",
+    "dimensions": {
+      "width": 0.6,
+      "depth": 0.58,
+      "height": 0.78
+    },
+    "thumbnailUrl": "/static/models/swivel-tub-armchair/thumbnail.jpg",
+    "model": {
+      "glbUrl": "/static/models/swivel-tub-armchair/model.glb",
+      "usdzUrl": "/static/models/swivel-tub-armchair/model.usdz",
+      "sizeBytes": 1873776
+    },
+    "productUrl": "https://casa-atelier.example.com/products/chair-sol",
+    "active": true
+  },
+  {
+    "id": "prod-chair-cora",
+    "name": "Cora Tub Armchair",
+    "description": "Tub armchair in cognac microsuede with welted seams and splayed oak legs.",
+    "categoryId": "cat-chair",
+    "retailerId": "ret-casa",
+    "price": 749,
+    "currency": "USD",
+    "dimensions": {
+      "width": 0.76,
+      "depth": 0.74,
+      "height": 0.78
+    },
+    "thumbnailUrl": "/static/models/tub-club-armchair/thumbnail.jpg",
+    "model": {
+      "glbUrl": "/static/models/tub-club-armchair/model.glb",
+      "usdzUrl": "/static/models/tub-club-armchair/model.usdz",
+      "sizeBytes": 4036616
+    },
+    "productUrl": "https://casa-atelier.example.com/products/chair-cora",
+    "active": true
+  },
+  {
+    "id": "prod-chair-nara",
+    "name": "Nara Lounge Armchair",
+    "description": "Solid wood lounge armchair with woven webbing sides and piped linen cushions.",
+    "categoryId": "cat-chair",
+    "retailerId": "ret-north",
+    "price": 1149,
+    "currency": "USD",
+    "dimensions": {
+      "width": 0.72,
+      "depth": 0.78,
+      "height": 0.8
+    },
+    "thumbnailUrl": "/static/models/strap-lounge-armchair/thumbnail.jpg",
+    "model": {
+      "glbUrl": "/static/models/strap-lounge-armchair/model.glb",
+      "usdzUrl": "/static/models/strap-lounge-armchair/model.usdz",
+      "sizeBytes": 4237688
+    },
+    "productUrl": "https://northwood.example.com/products/chair-nara",
+    "active": true
+  },
+  {
+    "id": "prod-table-terra",
+    "name": "Terra Dining Table",
+    "description": "Solid oak dining table for six.",
+    "categoryId": "cat-table",
+    "retailerId": "ret-north",
+    "price": 1199,
+    "currency": "USD",
+    "dimensions": {
+      "width": 1.8,
+      "depth": 0.9,
+      "height": 0.75
+    },
+    "thumbnailUrl": "https://placehold.co/600x600/png?text=Terra%20Dining%20Table",
+    "model": {
+      "glbUrl": "https://cdn.example.com/models/table-terra/model.glb",
+      "usdzUrl": "https://cdn.example.com/models/table-terra/model.usdz",
+      "sizeBytes": 3100000
+    },
+    "productUrl": "https://northwood.example.com/products/table-terra",
+    "affiliateUrl": "https://northwood.example.com/products/table-terra?ref=airoom",
+    "active": true
+  },
+  {
+    "id": "prod-rug-dune",
+    "name": "Dune Wool Rug",
+    "description": "Hand-woven wool rug, neutral tones.",
+    "categoryId": "cat-rug",
+    "retailerId": "ret-casa",
+    "price": 549,
+    "currency": "USD",
+    "dimensions": {
+      "width": 2,
+      "depth": 3,
+      "height": 0.012
+    },
+    "thumbnailUrl": "https://placehold.co/600x600/png?text=Dune%20Wool%20Rug",
+    "model": {
+      "glbUrl": "https://cdn.example.com/models/rug-dune/model.glb",
+      "usdzUrl": "https://cdn.example.com/models/rug-dune/model.usdz",
+      "sizeBytes": 1800000
+    },
+    "productUrl": "https://casa-atelier.example.com/products/rug-dune",
+    "active": true
+  },
+  {
+    "id": "prod-lamp-arc",
+    "name": "Arc Floor Lamp",
+    "description": "Arched floor lamp with marble base.",
+    "categoryId": "cat-lamp",
+    "retailerId": "ret-north",
+    "price": 329,
+    "currency": "USD",
+    "dimensions": {
+      "width": 0.4,
+      "depth": 1.7,
+      "height": 2.05
+    },
+    "thumbnailUrl": "https://placehold.co/600x600/png?text=Arc%20Floor%20Lamp",
+    "model": {
+      "glbUrl": "https://cdn.example.com/models/lamp-arc/model.glb",
+      "usdzUrl": "https://cdn.example.com/models/lamp-arc/model.usdz",
+      "sizeBytes": 2200000
+    },
+    "productUrl": "https://northwood.example.com/products/lamp-arc",
+    "affiliateUrl": "https://northwood.example.com/products/lamp-arc?ref=airoom",
+    "active": true
+  },
+  {
+    "id": "prod-storage-kai",
+    "name": "Kai Sideboard",
+    "description": "Low sideboard with sliding doors.",
+    "categoryId": "cat-storage",
+    "retailerId": "ret-casa",
+    "price": 899,
+    "currency": "USD",
+    "dimensions": {
+      "width": 1.6,
+      "depth": 0.45,
+      "height": 0.7
+    },
+    "thumbnailUrl": "https://placehold.co/600x600/png?text=Kai%20Sideboard",
+    "model": {
+      "glbUrl": "https://cdn.example.com/models/storage-kai/model.glb",
+      "usdzUrl": "https://cdn.example.com/models/storage-kai/model.usdz",
+      "sizeBytes": 2600000
+    },
+    "productUrl": "https://casa-atelier.example.com/products/storage-kai",
+    "active": false
+  },
+  {
+    "id": "prod-art-knights",
+    "name": "Harlequin Knights Framed Canvas",
+    "description": "Framed canvas print of three harlequin knights riding with banners, in a slim black frame.",
+    "categoryId": "cat-wall-art",
+    "retailerId": "ret-casa",
+    "price": 489,
+    "currency": "USD",
+    "dimensions": {
+      "width": 1.2,
+      "depth": 0.045,
+      "height": 0.9
+    },
+    "thumbnailUrl": "/static/models/framed-painting-knights/thumbnail.jpg",
+    "model": {
+      "glbUrl": "/static/models/framed-painting-knights/model.glb",
+      "usdzUrl": "/static/models/framed-painting-knights/model.usdz",
+      "sizeBytes": 420008
+    },
+    "productUrl": "https://casa-atelier.example.com/products/art-knights",
+    "active": true
+  }
+]

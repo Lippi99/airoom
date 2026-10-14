@@ -1,0 +1,13 @@
+[
+  {
+    "id": "ret-north",
+    "name": "Northwood Home (sample)",
+    "websiteUrl": "https://northwood.example.com",
+    "affiliateProgram": "sample-network"
+  },
+  {
+    "id": "ret-casa",
+    "name": "Casa Atelier (sample)",
+    "websiteUrl": "https://casa-atelier.example.com"
+  }
+]

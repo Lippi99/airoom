@@ -1,0 +1,63 @@
+// Soft contact shadow drawn under each piece of furniture.
+//
+// Real-time shadows depend on ARCore's light estimate and are often faint or missing, which
+// makes furniture look like it floats. This is a procedural "grounding" shadow instead:
+// a soft rounded rectangle matching the item's footprint, darkest underneath and fading out
+// past its edges. No texture, independent of lighting.
+//
+// Drawn on a flat quad of size (footprint + 2 * padding), lying on the floor.
+// Compile (Filament matc, material version 68):
+//   matc -p mobile -a opengl -a vulkan -o ../assets/materials/furniture_contact_shadow.filamat furniture_contact_shadow.mat
+
+material {
+    name : furniture_contact_shadow,
+    shadingModel : unlit,
+    blending : transparent,
+    transparency : default,
+    depthWrite : false,
+    culling : none,
+    parameters : [
+        {
+            // Half of the item footprint (width/2, depth/2), meters.
+            type : float2,
+            name : halfFootprint
+        },
+        {
+            // How far the shadow fades out beyond the footprint, meters.
+            type : float,
+            name : padding
+        },
+        {
+            // Darkness right under the item (0..1).
+            type : float,
+            name : opacity
+        }
+    ],
+    requires : [
+        uv0
+    ]
+}
+
+fragment {
+    // Signed distance from p to a rounded rectangle centered at the origin.
+    float roundedRectDistance(vec2 p, vec2 halfSize, float radius) {
+        vec2 q = abs(p) - halfSize + radius;
+        return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - radius;
+    }
+
+    void material(inout MaterialInputs material) {
+        prepareMaterial(material);
+        vec2 halfSize = materialParams.halfFootprint;
+        float pad = materialParams.padding;
+
+        // UV (0..1) across the quad -> meters from the footprint center.
+        vec2 p = (getUV0() - 0.5) * 2.0 * (halfSize + pad);
+
+        // Shrink the dark core a little so the falloff starts inside the footprint edge.
+        float inset = min(min(halfSize.x, halfSize.y) * 0.25, pad);
+        float d = roundedRectDistance(p, max(halfSize - inset, vec2(0.01)), inset);
+        float alpha = materialParams.opacity * (1.0 - smoothstep(-inset, pad, d));
+
+        material.baseColor = vec4(0.0, 0.0, 0.0, alpha); // premultiplied: black * alpha
+    }
+}

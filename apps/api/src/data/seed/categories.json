@@ -1,0 +1,10 @@
+[
+  { "id": "cat-sofa", "slug": "sofa", "name": "Sofas" },
+  { "id": "cat-bed", "slug": "bed", "name": "Beds" },
+  { "id": "cat-chair", "slug": "chair", "name": "Chairs" },
+  { "id": "cat-table", "slug": "table", "name": "Tables" },
+  { "id": "cat-rug", "slug": "rug", "name": "Rugs" },
+  { "id": "cat-lamp", "slug": "lamp", "name": "Lamps" },
+  { "id": "cat-storage", "slug": "storage", "name": "Storage" },
+  { "id": "cat-wall-art", "slug": "wall-art", "name": "Wall Art" }
+]

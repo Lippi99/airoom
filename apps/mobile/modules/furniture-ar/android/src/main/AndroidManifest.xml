@@ -1,0 +1,13 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <uses-permission android:name="android.permission.CAMERA" />
+  <!-- Models are downloaded on demand. -->
+  <uses-permission android:name="android.permission.INTERNET" />
+
+  <!-- AR is optional: the catalog works on every device, AR only where ARCore is available. -->
+  <uses-feature android:name="android.hardware.camera.ar" android:required="false" />
+  <uses-feature android:glEsVersion="0x00030000" android:required="false" />
+
+  <application>
+    <meta-data android:name="com.google.ar.core" android:value="optional" />
+  </application>
+</manifest>

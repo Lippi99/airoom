@@ -1,0 +1,73 @@
+// Camera background with depth occlusion, tuned for furniture.
+//
+// Based on SceneView 2.3.4 `camera_stream_depth.mat`. The camera background writes the
+// real-world depth estimated by ARCore into the depth buffer, so virtual furniture is
+// hidden where something real is in front of it (people, chairs, door frames).
+//
+// Changes vs. SceneView's material (they caused holes in models up close / while moving):
+//  1. A safety margin: real depth is pushed back by OCCLUSION_MARGIN_M plus a share of the
+//     distance (depth noise grows with distance). Furniture is only hidden when the real
+//     surface is clearly in front of it, so noise and floor contact no longer cut holes.
+//  2. Pixels without depth data (0 mm) are treated as far away instead of "at the lens",
+//     which hid the furniture.
+//
+// Parameter names must stay identical: ARCameraStream sets them.
+// Compile (Filament matc, material version 68 = Filament 1.68.x, the one SceneView uses):
+//   matc -p mobile -a opengl -a vulkan -o ../assets/materials/furniture_camera_depth.filamat furniture_camera_depth.mat
+// See modules/furniture-ar/README.md.
+
+material {
+    name : furniture_camera_depth,
+    shadingModel : unlit,
+    blending : opaque,
+    culling : none,
+    vertexDomain : device,
+    parameters : [
+        {
+            type : samplerExternal,
+            name : cameraTexture
+        },
+        {
+            type : sampler2d,
+            name : depthTexture
+        },
+        {
+            type : float4x4,
+            name : uvTransform
+        }
+    ],
+    requires : [
+        uv0
+    ]
+}
+
+fragment {
+    // Fixed margin plus a share of the distance: ~0.08 m at 0.5 m, ~0.10 m at 1 m, ~0.18 m at 3 m.
+    #define OCCLUSION_MARGIN_M 0.06
+    #define OCCLUSION_MARGIN_PER_M 0.04
+    #define NO_DEPTH_DISTANCE_M 1000.0
+
+    void material(inout MaterialInputs material) {
+        prepareMaterial(material);
+        material.baseColor.rgb = inverseTonemapSRGB(texture(materialParams_cameraTexture, getUV0()).rgb);
+
+        vec2 packed_depth = texture(materialParams_depthTexture, getUV0()).xy;
+        float depth_m = dot(packed_depth, vec2(255.0, 256.0 * 255.0)) / 1000.0;
+
+        float occluder_m = depth_m <= 0.0
+            ? NO_DEPTH_DISTANCE_M
+            : depth_m + OCCLUSION_MARGIN_M + OCCLUSION_MARGIN_PER_M * depth_m;
+
+        vec4 view = mulMat4x4Float3(getClipFromViewMatrix(), vec3(0.0, 0.0, -occluder_m));
+        gl_FragDepth = view.z / view.w;
+    }
+}
+
+vertex {
+    void materialVertex(inout MaterialVertexInputs material) {
+        material.uv0 = mulMat4x4Float3(materialParams.uvTransform, vec3(material.uv0.x, material.uv0.y, 0.0)).xy;
+        vec4 clip = getPosition();
+        clip.z = 0.9999;
+        material.worldPosition = mulMat4x4Float3(getWorldFromClipMatrix(), clip.xyz);
+    }
+}

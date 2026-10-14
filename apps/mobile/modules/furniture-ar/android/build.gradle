@@ -1,0 +1,30 @@
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+
+group = 'com.airoom.furniturear'
+version = '0.1.0'
+
+android {
+  namespace "com.airoom.furniturear"
+  defaultConfig {
+    versionCode 1
+    versionName "0.1.0"
+  }
+  lintOptions {
+    abortOnError false
+  }
+}
+
+dependencies {
+  // SceneView 2.3.x (classic View API). 3.x+ is built with Kotlin >= 2.3, which the
+  // Kotlin 2.1 compiler used by React Native 0.86 cannot read. Revisit when RN bumps Kotlin.
+  implementation 'io.github.sceneview:arsceneview:2.3.4'
+  // ComponentActivity / Lifecycle for ARSceneView; SceneView keeps it off our compile classpath.
+  implementation 'androidx.activity:activity:1.8.2'
+
+  testImplementation 'junit:junit:4.13.2'
+  // Real org.json for JVM tests (Android's is a stub there); reads collision-cases.json.
+  testImplementation 'org.json:json:20240303'
+}
