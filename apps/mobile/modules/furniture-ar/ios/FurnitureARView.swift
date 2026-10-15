@@ -9,6 +9,7 @@ class FurnitureARView: ExpoView {
   let onItemSelected = EventDispatcher()
   let onPlacementBlocked = EventDispatcher()
   let onItemTapped = EventDispatcher()
+  let onItemRemoved = EventDispatcher()
   let onError = EventDispatcher()
 
   var showPlaneOverlay = true

@@ -18,7 +18,11 @@ Core user flow:
 3. The app detects the floor (and walls), and the user **places** the item in the room.
 4. The user can **move** and **rotate** the item. Items **cannot collide** with walls or with
    other placed items.
-5. Each item has a **purchase link (href)** to the retailer's product page. Tapping
+5. The user can add **several different products** to the same AR view (a **scene**), name it
+   and **save** it, and reopen it later (Scenes tab). The scene's **shopping list** (tap its
+   name) shows each product's price, the total and a Buy button per product; **Share** sends a
+   photo of the room with the furniture.
+6. Each item has a **purchase link (href)** to the retailer's product page. Tapping
    "Buy" opens it through our tracking redirect.
 
 **Monetization:** affiliate links and retailer partnerships. Every outbound click goes
@@ -47,6 +51,9 @@ through the backend (`GET /go/:productId`) so clicks can be tracked.
 | Shared types | `packages/shared` (TypeScript), imported by mobile and API |
 | 3D formats | **GLB/glTF** (Android), **USDZ** (iOS) |
 | Model tooling | Blender, `@gltf-transform/cli`, Reality Converter (macOS) |
+| Saved scene positions | **ARCore Cloud Anchors** (keyless auth via Google Play services; setup in `docs/steps/03c-scenes.md`) |
+| On-device storage | **AsyncStorage** (`@react-native-async-storage/async-storage`): favorites, as product ids |
+| Photo sharing | **expo-sharing** (the AR view's `captureSnapshot` photo) |
 | Builds | **EAS Build** (development builds; Expo Go is NOT supported) |
 | Tests | Vitest (API, shared), Jest + React Native Testing Library (mobile) |
 
@@ -76,14 +83,16 @@ npm workspaces monorepo:
 │   │   ├── app/                  # Expo Router screens
 │   │   │   ├── (tabs)/
 │   │   │   │   ├── index.tsx     # catalog
+│   │   │   │   ├── scenes.tsx    # saved scenes (open / delete / new)
 │   │   │   │   └── favorites.tsx
 │   │   │   ├── product/[id].tsx  # product details
-│   │   │   └── ar.tsx            # AR screen (uses FurnitureARView)
+│   │   │   └── ar.tsx            # AR scene editor (uses FurnitureARView)
 │   │   ├── src/
 │   │   │   ├── api/              # typed API client
+│   │   │   ├── ar/               # AR guidance texts, scene layout math
 │   │   │   ├── components/
 │   │   │   ├── hooks/
-│   │   │   └── store/            # scene state (placed items), favorites
+│   │   │   └── store/            # scene state (placed items), favorites (kept on device)
 │   │   └── modules/
 │   │       └── furniture-ar/     # custom Expo native module
 │   │           ├── index.ts      # public TS API (the contract)
@@ -113,7 +122,8 @@ npm workspaces monorepo:
 - TypeScript `strict: true`. No `any` without a comment explaining why.
 - Functional components and hooks only.
 - All API calls go through `src/api/` (typed with `packages/shared` DTOs).
-- Never hardcode retailer URLs in the app. Always open `GET {API_URL}/go/:productId`.
+- Never hardcode retailer URLs in the app. Always open `GET {API_URL}/go/:productId`
+  (`openBuyPage` in `src/utils/buy.ts` does it for every Buy button).
 - The AR screen must handle: camera permission denied, device without AR support,
   tracking lost, and model download failure, each with a clear message to the user.
 
@@ -136,6 +146,7 @@ change.
   onItemSelected={(e: { instanceId: string | null }) => void}
   onPlacementBlocked={(e: { instanceId: string; reason: 'wall' | 'item' | 'noFloor' | 'noWall' }) => void}
   onItemTapped={(e: { instanceId: string; productId: string }) => void}
+  onItemRemoved={(e: { instanceId: string; productId: string }) => void} // deleted by the user (trash)
   onError={(e: { code: string; message: string }) => void}
 />
 
@@ -144,6 +155,10 @@ arRef.current.placeItem(item: ARItem): Promise<void>
 arRef.current.removeItem(instanceId: string): Promise<void>
 arRef.current.clearScene(): Promise<void>
 arRef.current.captureSnapshot(): Promise<{ uri: string }>   // photo of the scene
+arRef.current.getPlacedItems(): Promise<ARPlacedItem[]>      // loaded items + world poses, placement order
+arRef.current.hostItemAnchor(instanceId: string): Promise<{ cloudAnchorId: string; ttlDays: number }> // cloud anchor at the item (365 d)
+arRef.current.resolveCloudAnchor(cloudAnchorId: string): Promise<ARPose> // once recognized and settled; several at once
+arRef.current.stopResolvingCloudAnchors(): Promise<void>                 // pending resolves reject with CANCELLED
 
 type ARItem = {
   instanceId: string;          // unique per placed copy
@@ -152,7 +167,11 @@ type ARItem = {
   glbUrl: string;              // used on Android
   usdzUrl: string;             // used on iOS
   dimensions: { width: number; depth: number; height: number }; // meters (wall art: depth = off the wall)
+  pose?: ARPose;               // restoring: place here instead of aiming
+  cloudAnchorId?: string;      // restoring: place on this resolved cloud anchor and follow it
 };
+type ARPose = { x: number; y: number; z: number; yaw: number }; // world, this AR session only
+type ARPlacedItem = { instanceId: string; productId: string; pose: ARPose; cloudAnchorId?: string }; // anchor at its spot, until moved
 ```
 
 Platform support check: `FurnitureAR.isSupported(): Promise<boolean>`.
@@ -175,7 +194,9 @@ Behavior details (same on both platforms):
   `CANCELLED` (item removed while its model was loading), `PLACEMENT_BLOCKED` (spot
   crosses a wall or overlaps an item; also emits `onPlacementBlocked` with the reason),
   `MODEL_LOAD_FAILED` (also emitted via `onError`), `CAMERA_PERMISSION_DENIED`,
-  `AR_UNAVAILABLE`, `SESSION_FAILED`, `SNAPSHOT_FAILED`. The list lives in
+  `AR_UNAVAILABLE`, `SESSION_FAILED`, `SNAPSHOT_FAILED`, and for cloud anchors
+  `CLOUD_ANCHOR_NOT_AUTHORIZED`, `CLOUD_ANCHOR_LOW_QUALITY`, `CLOUD_ANCHOR_NOT_FOUND`,
+  `CLOUD_ANCHOR_FAILED`. The list lives in
   `ARErrorCode` (`src/FurnitureAR.types.ts`).
 - The JS screen requests the camera permission **before** mounting the view; the native
   view never shows its own permission UI.
@@ -193,6 +214,28 @@ Behavior details (same on both platforms):
 - **Scale:** disabled. Items always render at 1:1 real scale.
 - **Selection:** tapping an item selects it (subtle outline/highlight). Tapping empty
   space deselects.
+- **Move arrows:** the selected item shows four arrows, one past the middle of each edge
+  (floor items: on the floor, in the item's own left/right/back/front; wall art: on the wall,
+  left/right/up/down). Tap = move 5 cm; hold = repeat. Same checks as a drag (collisions,
+  floor, wall art above the floor). Drawn on top of everything; an arrow wins over the item
+  behind it on touch-down.
+- **Delete:** a double tap on an item shows a trash button over it; tapping it removes the
+  item and emits `onItemRemoved`. Any other tap dismisses it.
+- **Scenes:** several different products per AR session; a saved scene stores poses relative
+  to a reference item (`items[0]`, the first floor item). Saving also hosts **one cloud anchor
+  per item**, at its own pose (each waits until its item has been seen well; items still at an
+  earlier anchor keep it). Reopening looks for all anchors at once: each item comes back at
+  **its own spot** as soon as its anchor is recognized and has settled (~1.5 s), and keeps
+  following the anchor while ARCore refines it, until the user moves it. Items whose anchor
+  isn't found within 4 s of the first one (or that have none) are placed around the found ones
+  (least-squares fit). No anchor found ("Place it where I point instead", not set up,
+  expired): the scene is rebuilt around the point the screen center aims at. See
+  `docs/steps/03c-scenes.md`.
+- **Floor items stay on the floor:** about 5 times a second (not while dragged or nudged) the
+  floor under each floor item is measured, from the detected floor plane under its center or
+  else from depth / feature-point hits under its footprint, and the item is eased onto it
+  (smoothed, 3 mm dead-band, offsets over 15 cm ignored). Once settled over a floor plane it
+  is anchored on it.
 - **Wall art:** one-finger drag slides it along the plane of the wall it hangs on (the
   infinite plane, so it can move past the patch ARCore has detected; corners are caught by
   collisions). No rotation: it always faces out of its wall and stays level. Its bottom edge
@@ -261,6 +304,10 @@ Implementation details (both platforms):
     to its back (within ~10°) and within 6 cm of it (ARCore often detects one wall as several
     planes). Other walls still block it (e.g. sliding into a corner). Its footprint is the
     `width × depth` rectangle in front of the wall.
+13. **Restored items are never blocked:** items placed with `pose` or `cloudAnchorId` (a saved
+    scene coming back) skip the placement checks. The saved arrangement was valid; today's
+    anchor, wall and floor estimates are each a few cm off, so a chair saved against a wall or
+    a painting on it would otherwise go missing. The escape rule (7) lets the user move them.
 
 ### 4.5 3D model requirements
 
@@ -275,6 +322,11 @@ Implementation details (both platforms):
   glTF/USDZ keeps loading simple on SceneView and RealityKit). Stay under the limit by
   removing hidden geometry and keeping textures at 2K, not by compressing.
 - Each product ships both `model.glb` and `model.usdz`.
+- **Contact shadow (floor items):** the GLB carries a baked contact shadow: a flat quad named
+  `ContactShadow` 1.5 mm above the floor, unlit black with the ambient occlusion the model casts
+  on the floor as alpha (dark under each leg, soft under the seat; ~0.1 MB). The Android view
+  then hides its generic shadow and keeps the quad from casting shadows. The USDZ leaves it out
+  (RealityKit has grounding shadows). `tools/models/modelkit.py` `contact_shadow()` makes it.
 - Models are downloaded on demand and cached on device. Never bundled in the app binary.
 - Procedurally built models live in `tools/models/` (Blender Python scripts; see its
   README). During development the API serves `apps/api/static/` at `/static/*`, and seed
@@ -311,6 +363,9 @@ Product      { id, name, description, categoryId, retailerId, price, currency,
 Category     { id, slug, name }   // sofa, bed, chair, table, rug, lamp, storage, wall-art
 Retailer     { id, name, websiteUrl, affiliateProgram? }
 ClickEvent   { id, productId, timestamp, platform: 'ios' | 'android' | 'unknown', sessionId? }
+Scene        { id, name, items: { productId, pose: { x, y, z, yaw }, anchor?: { cloudAnchorId, expiresAt } }[],
+               createdAt, updatedAt }
+             // items[0] = reference item; poses relative to it (ScenePose in packages/shared)
 ```
 
 - `Category.slug` is typed as the `FurnitureCategory` union from `packages/shared`.
@@ -328,6 +383,12 @@ interface ProductRepository {
 interface CategoryRepository { findAll(): Promise<Category[]>; findBySlug(slug: string): Promise<Category | null>; }
 interface RetailerRepository { findById(id: string): Promise<Retailer | null>; }
 interface ClickEventRepository { save(event: ClickEvent): Promise<void>; countByProduct(productId: string): Promise<number>; }
+interface SceneRepository {
+  findAll(): Promise<Scene[]>;                 // most recently updated first
+  findById(id: string): Promise<Scene | null>;
+  save(scene: Scene): Promise<void>;           // insert or replace
+  delete(id: string): Promise<boolean>;
+}
 ```
 
 ### 5.4 Endpoints
@@ -339,6 +400,11 @@ interface ClickEventRepository { save(event: ClickEvent): Promise<void>; countBy
 | GET | `/products?category=&search=` | List active products |
 | GET | `/products/:id` | Product details (incl. model URLs and dimensions) |
 | GET | `/go/:productId?platform=&sessionId=` | Record a `ClickEvent`, then **302 redirect** to `affiliateUrl ?? productUrl` |
+| GET | `/scenes` | Saved scenes, most recently updated first |
+| GET | `/scenes/:id` | One scene |
+| POST | `/scenes` | Create `{ name, items }` → 201 (400 `UNKNOWN_PRODUCT` for products not in the catalog) |
+| PUT | `/scenes/:id` | Replace name and items |
+| DELETE | `/scenes/:id` | 204 |
 
 **Product DTO:** both `/products` and `/products/:id` return
 `category: { id, slug, name }` (slug typed as `FurnitureCategory`) and
@@ -398,6 +464,11 @@ npx expo prebuild -p android                  # (re)generate native android proj
 npx expo run:android --device                 # build + run on connected device
 npm run android:device -w apps/mobile         # same, plus `adb reverse` for the API port (USB)
 npm run reverse:api -w apps/mobile            # re-tunnel API port 3333 after replugging the phone
+# Without USB (Android 11+ Wireless debugging, phone and PC on the same Wi-Fi): pair once with the
+# code from "Pair device with pairing code", then everything above (installs, adb reverse) works
+adb pair <ip>:<pairing-port> <code>           # once per PC
+adb connect <ip>:<port>                       # after a phone restart / Wi-Fi change
+npx expo start --port 8081                    # dev server; never with CI=1 (it never reloads code)
 eas build --profile development -p android    # cloud dev build
 eas build --profile development -p ios        # cloud dev build (no Mac needed)
 npm test -w apps/mobile

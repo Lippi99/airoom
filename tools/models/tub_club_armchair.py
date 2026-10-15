@@ -471,6 +471,7 @@ def main():
 
     upholstery = add_detail(suede)
     mk.bake_ao(upholstery, os.path.join(build_dir, "upholstery_ao.jpg"))
+    mk.contact_shadow(build_dir)
     mk.export(directory)
     mk.render_previews(directory, build_dir, distance=2.4, target_z=0.38)
     print("REPORT done")

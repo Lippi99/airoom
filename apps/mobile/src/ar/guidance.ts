@@ -9,17 +9,20 @@ export function surfaceFor(category: FurnitureCategory): PlacementSurface {
 }
 
 export interface GuidanceInput {
-  surface: PlacementSurface;
+  /** Surface of the product about to be placed; null when nothing is being placed (arranging). */
+  surface: PlacementSurface | null;
   tracking: TrackingState | null;
   floorCount: number;
   wallCount: number;
   itemCount: number;
   isPlacing: boolean;
+  /** Surface of the selected item; null or absent when nothing is selected. */
+  selectedSurface?: PlacementSurface | null;
 }
 
 /** One-line hint shown over the camera, based on what the AR session can do right now. */
 export function getGuidance(input: GuidanceInput): string {
-  const { surface, tracking, itemCount, isPlacing } = input;
+  const { surface, tracking, itemCount, isPlacing, selectedSurface } = input;
   if (tracking === null) return 'Starting the camera…';
   if (tracking === 'notAvailable') return 'Tracking lost. Point at a well-lit, textured area.';
   if (tracking === 'limited') return 'Move your phone slowly to scan the room.';
@@ -27,21 +30,27 @@ export function getGuidance(input: GuidanceInput): string {
   if (surface === 'wall') {
     // Plain walls are often never detected as planes; the native side then measures the wall
     // with depth when Place is tapped, which works best a meter or two away, after moving a bit.
-    if (itemCount === 0 && input.wallCount === 0) return 'Stand 1-2 m from the wall, move a little, aim the dot, tap Place.';
-    if (itemCount === 0) return 'Aim the center dot where its middle should hang, then tap Place.';
-    return 'Drag to move it along the wall';
+    if (input.wallCount === 0) return 'Stand 1-2 m from the wall, move a little, aim the dot, tap Place.';
+    return 'Aim the center dot where its middle should hang, then tap Place.';
   }
-  if (input.floorCount === 0) return 'Point the camera at the floor and move it slowly.';
-  if (itemCount === 0) return 'Aim the center dot at the floor, then tap Place.';
-  return 'Drag to move · Twist with two fingers to rotate';
+  if (surface === 'floor') {
+    if (input.floorCount === 0) return 'Point the camera at the floor and move it slowly.';
+    return 'Aim the center dot at the floor, then tap Place.';
+  }
+  if (itemCount === 0) return 'Tap Add to choose furniture.';
+  if (selectedSurface === 'wall') return 'Arrows or drag to move it · Double-tap to delete';
+  if (selectedSurface === 'floor') return 'Arrows or drag to move · Twist to rotate · Double-tap to delete';
+  return 'Tap an item to move it · Double-tap to delete';
 }
 
 /**
- * Whether the Place button can be used: tracking, not busy, and for floor items a floor found.
- * Wall items don't wait for a detected wall plane: plain walls may never become one, and the
- * native side can still measure them with depth when Place is tapped (or answers NO_WALL).
+ * Whether the Place button can be used: something to place, tracking, not busy, and for
+ * floor items a floor found. Wall items don't wait for a detected wall plane: plain walls may
+ * never become one, and the native side can still measure them with depth when Place is
+ * tapped (or answers NO_WALL).
  */
 export function canPlace({ surface, tracking, floorCount, isPlacing }: GuidanceInput): boolean {
+  if (surface === null) return false;
   const surfaceReady = surface === 'wall' || floorCount > 0;
   return tracking === 'normal' && surfaceReady && !isPlacing;
 }
@@ -76,6 +85,14 @@ export function errorMessage(error: Pick<ARErrorEvent, 'code' | 'message'>, surf
       return 'Camera access is needed to show furniture in your room.';
     case 'AR_UNAVAILABLE':
       return 'AR is not available on this device.';
+    case 'CLOUD_ANCHOR_NOT_AUTHORIZED':
+      return 'remembering exact spots is not set up yet (ARCore Cloud Anchors).';
+    case 'CLOUD_ANCHOR_LOW_QUALITY':
+      return 'walk a few steps around the furniture while pointing at it, then save again.';
+    case 'CLOUD_ANCHOR_NOT_FOUND':
+      return "this scene's saved spot has expired.";
+    case 'CLOUD_ANCHOR_FAILED':
+      return "couldn't reach the AR cloud service. Check your connection.";
     default:
       return error.message || 'Something went wrong with AR.';
   }

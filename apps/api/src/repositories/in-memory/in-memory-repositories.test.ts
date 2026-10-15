@@ -4,6 +4,7 @@ import { InMemoryCategoryRepository } from './in-memory-category-repository';
 import { InMemoryClickEventRepository } from './in-memory-click-event-repository';
 import { InMemoryProductRepository } from './in-memory-product-repository';
 import { InMemoryRetailerRepository } from './in-memory-retailer-repository';
+import { InMemorySceneRepository } from './in-memory-scene-repository';
 
 describe('InMemoryProductRepository', () => {
   const repo = () => new InMemoryProductRepository(productsFixture);
@@ -60,5 +61,36 @@ describe('InMemoryClickEventRepository', () => {
     expect(await repo.countByProduct('a')).toBe(2);
     expect(await repo.countByProduct('b')).toBe(1);
     expect(await repo.countByProduct('c')).toBe(0);
+  });
+});
+
+describe('InMemorySceneRepository', () => {
+  const scene = (id: string, updatedAt: string) => ({
+    id,
+    name: `Scene ${id}`,
+    items: [{ productId: 'p-sofa', pose: { x: 0, y: 0, z: 0, yaw: 0 } }],
+    createdAt: new Date('2026-01-01T00:00:00Z'),
+    updatedAt: new Date(updatedAt),
+  });
+
+  it('saves (upserts), lists newest first, finds and deletes', async () => {
+    const repo = new InMemorySceneRepository();
+    await repo.save(scene('a', '2026-01-02T00:00:00Z'));
+    await repo.save(scene('b', '2026-01-03T00:00:00Z'));
+    await repo.save({ ...scene('a', '2026-01-04T00:00:00Z'), name: 'Renamed' });
+    expect((await repo.findAll()).map((s) => s.name)).toEqual(['Renamed', 'Scene b']);
+    expect((await repo.findById('b'))?.name).toBe('Scene b');
+    expect(await repo.findById('x')).toBeNull();
+    expect(await repo.delete('a')).toBe(true);
+    expect(await repo.delete('a')).toBe(false);
+    expect(await repo.findAll()).toHaveLength(1);
+  });
+
+  it('returns copies so callers cannot mutate stored data', async () => {
+    const repo = new InMemorySceneRepository();
+    await repo.save(scene('a', '2026-01-02T00:00:00Z'));
+    const found = await repo.findById('a');
+    found!.items[0]!.pose.x = 9;
+    expect((await repo.findById('a'))?.items[0]?.pose.x).toBe(0);
   });
 });

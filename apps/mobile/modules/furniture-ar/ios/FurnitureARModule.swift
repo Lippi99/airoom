@@ -23,6 +23,7 @@ public class FurnitureARModule: Module {
         "onItemSelected",
         "onPlacementBlocked",
         "onItemTapped",
+        "onItemRemoved",
         "onError"
       )
 
@@ -45,6 +46,22 @@ public class FurnitureARModule: Module {
       AsyncFunction("captureSnapshot") { (view: FurnitureARView) -> [String: String] in
         throw ARUnavailableException()
       }
+
+      AsyncFunction("getPlacedItems") { (view: FurnitureARView) -> [[String: Any]] in
+        throw ARUnavailableException()
+      }
+
+      AsyncFunction("hostItemAnchor") { (view: FurnitureARView, instanceId: String) -> [String: Any] in
+        throw ARUnavailableException()
+      }
+
+      AsyncFunction("resolveCloudAnchor") { (view: FurnitureARView, cloudAnchorId: String) -> [String: Double] in
+        throw ARUnavailableException()
+      }
+
+      AsyncFunction("stopResolvingCloudAnchors") { (view: FurnitureARView) in
+        throw ARUnavailableException()
+      }
     }
   }
 }
@@ -57,6 +74,16 @@ struct ARItemRecord: Record {
   @Field var glbUrl: String = ""
   @Field var usdzUrl: String = ""
   @Field var dimensions: ARItemDimensions = ARItemDimensions()
+  @Field var pose: ARPoseRecord? = nil
+  @Field var cloudAnchorId: String? = nil
+}
+
+/// Mirrors `ARPose`: world meters, yaw in radians around +Y.
+struct ARPoseRecord: Record {
+  @Field var x: Double = 0
+  @Field var y: Double = 0
+  @Field var z: Double = 0
+  @Field var yaw: Double = 0
 }
 
 /// Real-world size in meters.

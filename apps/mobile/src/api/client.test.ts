@@ -1,5 +1,5 @@
 import { Platform } from 'react-native';
-import { ApiError, getBuyUrl, getProduct, getProducts } from './client';
+import { ApiError, createScene, deleteScene, getBuyUrl, getProduct, getProducts } from './client';
 import { API_URL } from '../config';
 import { sofaDto } from '../test/fixtures';
 
@@ -52,5 +52,28 @@ describe('api client', () => {
 describe('getBuyUrl', () => {
   it('points to the tracked /go link with the current platform, never the retailer', () => {
     expect(getBuyUrl('prod-sofa-oslo')).toBe(`${API_URL}/go/prod-sofa-oslo?platform=${Platform.OS}`);
+  });
+});
+
+describe('scenes', () => {
+  const body = { name: 'Den', items: [{ productId: 'p1', pose: { x: 0, y: 0, z: 0, yaw: 0 } }] };
+
+  it('posts a new scene as JSON', async () => {
+    mockFetchOnce(201, { id: 's1', ...body, createdAt: 'x', updatedAt: 'x' });
+    await expect(createScene(body)).resolves.toMatchObject({ id: 's1' });
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      `${API_URL}/scenes`,
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify(body),
+        headers: expect.objectContaining({ 'Content-Type': 'application/json' }),
+      }),
+    );
+  });
+
+  it('deletes without reading a body (204)', async () => {
+    (globalThis.fetch as jest.Mock).mockResolvedValueOnce({ ok: true, status: 204, json: async () => { throw new Error('no body'); } });
+    await expect(deleteScene('s 1')).resolves.toBeUndefined();
+    expect(globalThis.fetch).toHaveBeenCalledWith(`${API_URL}/scenes/s%201`, expect.objectContaining({ method: 'DELETE' }));
   });
 });

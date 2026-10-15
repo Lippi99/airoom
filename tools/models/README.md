@@ -156,6 +156,27 @@ creates a second UV map, bakes AO with Cycles and wires it as the glTF occlusion
   Verify by rendering the exported GLB with the AO as color, not by looking at the image.
 - USDZ export does not carry the AO map (Blender's USD exporter limitation).
 
+### Contact shadow (floor items)
+
+Last step before `mk.export`: `mk.contact_shadow(build_dir)`. It bakes the ambient occlusion
+the model casts on the floor (Cycles AO bake, distance 0.4 m) onto a quad under it (the
+model's footprint + 30 cm each side, 1.5 mm above the floor) and stores it as the alpha of a
+black, unlit, see-through material (512 px PNG, ~0.1 MB): darkest right under each leg, soft
+under the seat, fading to nothing at the quad's border. Without it, legged chairs look like
+they hover in AR even when they touch the floor.
+
+- The quad must be called `ContactShadow` (`mk.CONTACT_SHADOW_NAME`): the app looks for that
+  glTF node, keeps it from casting/receiving shadows and hides its own generic shadow.
+- The material is `Mix(Transparent, image color)` with the image alpha as factor: the glTF
+  exporter turns that into `KHR_materials_unlit` + `alphaMode: BLEND`. Check the GLB JSON if
+  you change it.
+- GLB only: `mk.export` leaves it out of the USDZ (RealityKit has grounding shadows).
+- Hidden in the regular previews and the thumbnail; `_build/preview_grounding.png` shows it
+  with the model casting no other shadow, and `_build/contact_shadow.png` is the map itself.
+- Run it after the size checks (the quad would count in the bounds) and after `mk.bake_ao`
+  (the quad must not darken the upholstery's AO).
+- Wall art keeps the app's procedural drop shadow on the wall.
+
 ### Wall art
 
 `framed_painting.py` builds a framed canvas. Differences from furniture:
@@ -176,7 +197,8 @@ creates a second UV map, bakes AO with Cycles and wires it as the glTF occlusion
 Target ≤ 5 MB per file, **uncompressed** (CLAUDE.md §4.5: no Draco/Meshopt/KTX2, textures
 at 2K, never 4K; the AO map stays at 1K, it is soft shading and 2K only adds ~0.7 MB).
 Cora (2K fabric, seat sag, seam puckers, ~124k triangles before hidden-face removal) lands
-at 4.0 MB GLB / 4.9 MB USDZ; Nara (2K linen + wood, ~70k triangles) at 4.2 / 4.8 MB.
+at 4.2 MB GLB / 4.9 MB USDZ; Nara (2K linen + wood, ~70k triangles) at 4.3 / 4.8 MB (GLBs
+include the ~0.1 MB contact shadow).
 Pillow `cuts` drive most of a cushion's size (12 is enough for welts and puckers). The USDZ is the tighter one (it
 stores per-corner normals and UVs). If a model doesn't fit, cut hidden or unneeded geometry
 (fewer shell rings, lower pillow `cuts`) or shrink the fabric's normal map, the largest

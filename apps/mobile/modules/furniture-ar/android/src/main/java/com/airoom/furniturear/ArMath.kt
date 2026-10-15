@@ -237,6 +237,144 @@ internal object ArMath {
     return Vec3(c * v.x - s * v.z, v.y, s * v.x + c * v.z)
   }
 
+  /** Rotates [v] by `yaw` around Y (item-local → world); the inverse of [toLocal]. */
+  fun toWorld(v: Vec3, yawRadians: Float): Vec3 {
+    val c = cos(yawRadians)
+    val s = sin(yawRadians)
+    return Vec3(c * v.x + s * v.z, v.y, -s * v.x + c * v.z)
+  }
+
+  /** Where a wall item ends up when snapped onto a wall: back-center X/Z and yaw. */
+  data class WallSnap(val x: Float, val z: Float, val yawRadians: Float)
+
+  /**
+   * Snaps a wall item whose back center is at ([x], [z]) with [yawRadians] onto the closest
+   * detected wall that faces the same way (within [maxAngleRad]), is at most [maxDistance]
+   * in front of or behind its back, and spans its position (with [alongMargin] past the
+   * detected ends). Moves it along the wall's normal and turns it to face straight out of the
+   * wall. Null when no wall qualifies. Used when rebuilding a saved scene: the saved offset
+   * and today's wall estimate are each off by a few cm.
+   */
+  fun snapToWall(
+    x: Float,
+    z: Float,
+    yawRadians: Float,
+    walls: List<CollisionMath.Segment>,
+    maxDistance: Float = SNAP_MAX_DISTANCE_M,
+    maxAngleRad: Float = SNAP_MAX_ANGLE_RAD,
+    alongMargin: Float = SNAP_ALONG_MARGIN_M,
+  ): WallSnap? {
+    val f = forward(yawRadians)
+    var best: WallSnap? = null
+    var bestDistance = Float.POSITIVE_INFINITY
+    for (s in walls) {
+      val len = kotlin.math.hypot(s.x2 - s.x1, s.z2 - s.z1)
+      if (len < EPSILON) continue
+      val ux = (s.x2 - s.x1) / len
+      val uz = (s.z2 - s.z1) / len
+      // Wall normal on the item's front side.
+      var nx = -uz
+      var nz = ux
+      if (nx * f.x + nz * f.z < 0f) {
+        nx = -nx
+        nz = -nz
+      }
+      if (nx * f.x + nz * f.z < cos(maxAngleRad)) continue
+      val along = (x - s.x1) * ux + (z - s.z1) * uz
+      if (along < -alongMargin || along > len + alongMargin) continue
+      val distance = (x - s.x1) * nx + (z - s.z1) * nz // + = in front of the wall
+      if (abs(distance) > maxDistance || abs(distance) >= bestDistance) continue
+      bestDistance = abs(distance)
+      best = WallSnap(x - nx * distance, z - nz * distance, atan2(nx, nz))
+    }
+    return best
+  }
+
+  /**
+   * One smoothing step of a restored item toward its cloud anchor's current position: the
+   * translation to apply now (a [gain] share of the remaining gap; zero within [deadband]).
+   * Floor items move across the floor only (their height is the floor's, see [floorFromSamples]);
+   * wall items only along their wall (distance from the wall and angle belong to the wall
+   * refinement), so the two corrections never fight.
+   */
+  fun followStep(current: Vec3, target: Vec3, yawRadians: Float, isWall: Boolean, gain: Float, deadband: Float): Vec3 {
+    val d = target - current
+    val along = if (isWall) {
+      val n = forward(yawRadians)
+      d - n * dot(d, n)
+    } else {
+      Vec3(d.x, 0f, d.z)
+    }
+    val length = kotlin.math.sqrt(dot(along, along))
+    return if (length < deadband) Vec3(0f, 0f, 0f) else along * gain
+  }
+
+  /**
+   * Floor height under an item from loose depth / feature-point hits: [hits][i] is what the ray
+   * toward [expected][i] (a point on the floor under the item, at its current height) actually
+   * hit, or null. Hits that landed elsewhere (a real chair in front: more than
+   * [maxHorizontal] off the expected spot) or too far above/below ([maxOffset], e.g. a table)
+   * are dropped; the median of the rest, if at least [minCount], is the floor.
+   */
+  fun floorFromSamples(
+    expected: List<Vec3>,
+    hits: List<Vec3?>,
+    maxHorizontal: Float,
+    maxOffset: Float,
+    minCount: Int,
+  ): Float? {
+    val heights = expected.indices.mapNotNull { i ->
+      val hit = hits.getOrNull(i) ?: return@mapNotNull null
+      val e = expected[i]
+      val horizontal = kotlin.math.hypot(hit.x - e.x, hit.z - e.z)
+      if (horizontal > maxHorizontal || abs(hit.y - e.y) > maxOffset) null else hit.y
+    }.sorted()
+    if (heights.size < minCount) return null
+    val mid = heights.size / 2
+    return if (heights.size % 2 == 1) heights[mid] else (heights[mid - 1] + heights[mid]) / 2f
+  }
+
+  /** The four move arrows around a selected item, named as the user sees them. */
+  enum class Handle { LEFT, RIGHT, TOP, BOTTOM }
+
+  /**
+   * Item-local unit direction a handle moves the item. Floor items move along the floor
+   * (TOP = away from their front, -Z; BOTTOM = toward it, +Z); wall items along their wall
+   * (TOP = up).
+   */
+  fun handleDirection(handle: Handle, isWall: Boolean): Vec3 = when (handle) {
+    Handle.LEFT -> Vec3(-1f, 0f, 0f)
+    Handle.RIGHT -> Vec3(1f, 0f, 0f)
+    Handle.TOP -> if (isWall) Vec3(0f, 1f, 0f) else Vec3(0f, 0f, -1f)
+    Handle.BOTTOM -> if (isWall) Vec3(0f, -1f, 0f) else Vec3(0f, 0f, 1f)
+  }
+
+  /**
+   * Item-local center of a handle's arrow: [gap] beyond the edge it points away from, plus
+   * half the arrow [size]. Floor items: on the floor, raised by [lift]; wall items: on the
+   * wall, [lift] in front of it.
+   */
+  fun handleCenter(handle: Handle, isWall: Boolean, width: Float, depth: Float, height: Float, size: Float, gap: Float, lift: Float): Vec3 {
+    val d = handleDirection(handle, isWall)
+    val reach = size / 2f + gap
+    return if (isWall) {
+      Vec3(d.x * (width / 2f + reach), d.y * (height / 2f + reach), lift)
+    } else {
+      Vec3(d.x * (width / 2f + reach), lift, d.z * (depth / 2f + reach))
+    }
+  }
+
+  /**
+   * Rotation (degrees) that turns an arrow drawn toward local +X into its handle's direction:
+   * around Y for floor arrows (flat, XZ), around Z for wall arrows (upright, XY).
+   */
+  fun handleAngleDegrees(handle: Handle): Float = when (handle) {
+    Handle.RIGHT -> 0f
+    Handle.LEFT -> 180f
+    Handle.TOP -> 90f
+    Handle.BOTTOM -> -90f
+  }
+
   fun dot(a: Vec3, b: Vec3) = a.x * b.x + a.y * b.y + a.z * b.z
 
   fun normalize(v: Vec3): Vec3? {
@@ -294,6 +432,9 @@ internal object ArMath {
     return Vec3(rx / rw, ry / rw, rz / rw)
   }
 
+  const val SNAP_MAX_DISTANCE_M = 0.25f
+  const val SNAP_MAX_ANGLE_RAD = 0.26f // ~15 degrees
+  const val SNAP_ALONG_MARGIN_M = 0.5f
   private const val EPSILON = 1e-6f
   /** Horizontal part of a wall's normal: below this (about 60° off vertical walls) it is no wall. */
   private const val MIN_WALL_NORMAL_XZ = 0.5f

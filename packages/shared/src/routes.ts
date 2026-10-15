@@ -6,6 +6,8 @@ export const ApiRoutes = {
   products: '/products',
   product: (id: string) => `/products/${encodeURIComponent(id)}`,
   go: (productId: string) => `/go/${encodeURIComponent(productId)}`,
+  scenes: '/scenes',
+  scene: (id: string) => `/scenes/${encodeURIComponent(id)}`,
 } as const;
 
 export interface GoLinkParams {

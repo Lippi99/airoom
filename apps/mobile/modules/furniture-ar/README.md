@@ -5,14 +5,24 @@ defined in `src/FurnitureAR.types.ts` and documented in CLAUDE.md §4.2–4.4.
 
 | Platform | Stack | Status |
 |---|---|---|
-| Android | Kotlin, SceneView 2.3.4 (Filament 1.68.2), ARCore | Implemented (steps 2-3, wall art) |
+| Android | Kotlin, SceneView 2.3.4 (Filament 1.68.2), ARCore | Implemented (steps 2-3, wall art, scenes + on-scene controls) |
 | iOS | Swift, RealityKit, ARKit | Contract stub (step 4) |
 
 Floor items stand on the floor; wall items (category `wall-art`) hang on walls: placed on a
 vertical plane, dragged along it, never rotated, with an origin at the center of their back
 face (CLAUDE.md 4.2-4.5). The iOS implementation must do the same.
 
-## Android: custom Filament material
+Saved scenes (docs/steps/03c-scenes.md): one ARCore Cloud Anchor per item (`hostItemAnchor`),
+resolved all at once on reopening (`resolveCloudAnchor`, reported after ~1.5 s of settling);
+restored items follow their anchor until the user moves them. Floor items are kept on the
+measured floor (~5 Hz). Models may bring a baked `ContactShadow` node, which replaces the
+generic shadow. Needs the Google Cloud setup described in that doc.
+
+## Android: custom Filament materials
+
+Same procedure for `furniture_contact_shadow.mat` (soft shadow under items without a baked one) and
+`furniture_icon.mat` (move arrows and trash button, drawn procedurally on top of everything;
+see docs/steps/03c-scenes.md); replace the file names in the `matc` command.
 
 `android/src/main/materials/furniture_camera_depth.mat` is the camera background with depth
 occlusion. It replaces SceneView's default to add a depth margin (no holes in furniture

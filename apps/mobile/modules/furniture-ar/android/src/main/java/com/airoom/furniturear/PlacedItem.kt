@@ -1,6 +1,7 @@
 package com.airoom.furniturear
 
 import com.google.android.filament.MaterialInstance
+import com.google.ar.core.Anchor
 import com.google.ar.core.Trackable
 import io.github.sceneview.ar.node.AnchorNode
 import io.github.sceneview.node.CubeNode
@@ -47,6 +48,21 @@ internal class PlacedItem(
 
   /** Rotation around +Y, radians (counter-clockwise seen from above). */
   var yawRadians: Float = 0f
+
+  /**
+   * Resolved cloud anchor the item follows (restored from a saved scene): ARCore keeps refining
+   * its pose, and the item is eased along. Released (detached) once the user moves the item.
+   */
+  var cloudAnchor: Anchor? = null
+
+  /** Cloud anchor at the item's current spot (restored from it or hosted there); null once moved. */
+  var cloudAnchorId: String? = null
+
+  /** Counts moves made by the user (drag, arrows, twist), to tell whether it moved meanwhile. */
+  var userMoves: Int = 0
+
+  /** The model brings its own baked contact shadow (a `ContactShadow` node), so ours is hidden. */
+  var hasBakedShadow: Boolean = false
 
   /** True until the model is downloaded and attached. */
   val isLoading get() = modelNode == null

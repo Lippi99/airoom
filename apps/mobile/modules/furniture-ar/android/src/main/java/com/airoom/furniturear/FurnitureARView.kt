@@ -5,6 +5,7 @@ import android.graphics.Bitmap
 import android.graphics.Color
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import android.view.MotionEvent
 import android.view.PixelCopy
@@ -17,6 +18,8 @@ import com.google.ar.core.Anchor
 import com.google.ar.core.Config
 import com.google.ar.core.Frame
 import com.google.ar.core.HitResult
+import com.google.ar.core.HostCloudAnchorFuture
+import com.google.ar.core.ResolveCloudAnchorFuture
 import com.google.ar.core.Plane
 import com.google.ar.core.Pose
 import com.google.ar.core.Session
@@ -52,6 +55,7 @@ import java.io.FileOutputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import kotlin.math.abs
+import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.hypot
 import kotlin.math.sin
@@ -66,6 +70,10 @@ import kotlin.math.sin
  * Floor items stand on the floor and turn around Y. Wall items (category `wall-art`) hang on
  * a wall: placed where the screen center hits a vertical plane, facing out of it, dragged
  * along the wall's plane, never rotated (CLAUDE.md 4.2-4.4).
+ *
+ * On-scene controls: the selected item shows four move arrows around it (tap = one step,
+ * hold = repeat); a double tap on an item shows a trash button over it instead, and tapping
+ * that deletes the item (`onItemRemoved`).
  */
 class FurnitureARView(context: Context, appContext: AppContext) : ExpoView(context, appContext) {
 
@@ -78,6 +86,7 @@ class FurnitureARView(context: Context, appContext: AppContext) : ExpoView(conte
   private val onItemSelected by EventDispatcher<Map<String, Any?>>()
   private val onPlacementBlocked by EventDispatcher<Map<String, Any?>>()
   private val onItemTapped by EventDispatcher<Map<String, Any?>>()
+  private val onItemRemoved by EventDispatcher<Map<String, Any?>>()
   private val onError by EventDispatcher<Map<String, Any?>>()
 
   private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -108,6 +117,17 @@ class FurnitureARView(context: Context, appContext: AppContext) : ExpoView(conte
   private lateinit var footprintBlocked: MaterialInstance
   /** Procedural soft shadow under each item (src/main/materials/furniture_contact_shadow.mat). */
   private lateinit var contactShadowMaterial: Material
+
+  /** Move arrows and trash button (src/main/materials/furniture_icon.mat), shared by all items. */
+  private lateinit var iconMaterial: Material
+  private val iconMaterialInstances = mutableListOf<MaterialInstance>()
+  private lateinit var floorArrows: Map<ArMath.Handle, PlaneNode>
+  private lateinit var wallArrows: Map<ArMath.Handle, PlaneNode>
+  private lateinit var trashButton: PlaneNode
+  /** Item showing the trash button (double tapped); always the selected one. */
+  private var trashItem: PlacedItem? = null
+  /** Controls hidden while a snapshot is taken. */
+  private var controlsHidden = false
 
   init {
     val activity = appContext.currentActivity as? ComponentActivity
@@ -162,6 +182,7 @@ class FurnitureARView(context: Context, appContext: AppContext) : ExpoView(conte
     footprintSelected = view.materialLoader.createColorInstance(Color.argb(70, 255, 255, 255))
     footprintBlocked = view.materialLoader.createColorInstance(Color.argb(140, 230, 40, 40))
     contactShadowMaterial = view.materialLoader.createMaterial(CONTACT_SHADOW_MATERIAL)
+    createControls(view)
 
     addView(view, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
     sceneView = view
@@ -184,6 +205,8 @@ class FurnitureARView(context: Context, appContext: AppContext) : ExpoView(conte
     // Depth API enables occlusion (people and objects in front of furniture) where supported.
     depthSupported = session.isDepthModeSupported(Config.DepthMode.AUTOMATIC)
     config.depthMode = if (depthSupported) Config.DepthMode.AUTOMATIC else Config.DepthMode.DISABLED
+    // Saved scenes come back at the same spot in the room (hostItemAnchor / resolveCloudAnchor).
+    config.cloudAnchorMode = Config.CloudAnchorMode.ENABLED
   }
 
   private fun onSessionCreated(session: Session) {
@@ -211,11 +234,18 @@ class FurnitureARView(context: Context, appContext: AppContext) : ExpoView(conte
   fun destroy() {
     if (destroyed) return
     destroyed = true
+    cancelCloudAnchorTasks()
     scope.cancel()
     mainHandler.removeCallbacksAndMessages(null)
+    // Controls first: they may be children of an item that is about to be destroyed.
+    if (::trashButton.isInitialized) controlNodes().forEach { detachControl(it) }
     items.values.toList().forEach { destroyItem(it) }
     items.clear()
     sceneView?.let { view ->
+      if (::trashButton.isInitialized) {
+        controlNodes().forEach { runCatching { it.destroy() } }
+        iconMaterialInstances.forEach { runCatching { view.materialLoader.destroyMaterialInstance(it) } }
+      }
       view.lifecycle = null
       view.cameraStream = null
       runCatching { cameraStream?.destroy() }
@@ -247,6 +277,11 @@ class FurnitureARView(context: Context, appContext: AppContext) : ExpoView(conte
       updatePlanes(session)
     }
     refineWallItems(frame)
+    settleFloorItems(frame)
+    followCloudAnchors()
+    faceTrashToCamera(frame)
+    checkPendingHosts(session, frame)
+    settleResolvedAnchors()
   }
 
   private fun updatePlanes(session: Session) {
@@ -329,6 +364,19 @@ class FurnitureARView(context: Context, appContext: AppContext) : ExpoView(conte
         y == null || hit.hitPose.ty() <= y + FLOOR_TOLERANCE_M
       },
     )
+  }
+
+  /** The floor plane (tracked, near the lowest one) whose detected polygon contains (x, z). */
+  private fun floorPlaneAt(x: Float, z: Float): Plane? {
+    val session = sceneView?.session ?: return null
+    val floor = floorY ?: return null
+    return session.getAllTrackables(Plane::class.java).firstOrNull { plane ->
+      plane.trackingState == TrackingState.TRACKING &&
+        plane.subsumedBy == null &&
+        plane.type == Plane.Type.HORIZONTAL_UPWARD_FACING &&
+        plane.centerPose.ty() <= floor + FLOOR_TOLERANCE_M &&
+        plane.isPoseInPolygon(Pose.makeTranslation(x, plane.centerPose.ty(), z))
+    }
   }
 
   /** Wall hit under a screen point: a vertical plane, inside its detected polygon. */
@@ -499,10 +547,27 @@ class FurnitureARView(context: Context, appContext: AppContext) : ExpoView(conte
       return
     }
     val dims = record.dimensions
-    if (record.instanceId.isBlank() || record.glbUrl.isBlank() || dims.width <= 0 || dims.depth <= 0 || dims.height <= 0) {
+    val requested = record.pose
+    val poseValid = requested == null || listOf(requested.x, requested.y, requested.z, requested.yaw).all { it.isFinite() }
+    if (record.instanceId.isBlank() || record.glbUrl.isBlank() || dims.width <= 0 || dims.depth <= 0 || dims.height <= 0 || !poseValid) {
       promise.reject("INVALID_ITEM", "Item needs an instanceId, a glbUrl and positive dimensions.", null)
       return
     }
+    // Restoring on a cloud anchor found with resolveCloudAnchor: the item takes it over.
+    val cloudId = record.cloudAnchorId
+    val cloud: Anchor? = if (cloudId != null) {
+      resolvedAnchors.remove(cloudId) ?: run {
+        promise.reject("CLOUD_ANCHOR_NOT_FOUND", "That cloud anchor has not been found in this session.", null)
+        return
+      }
+    } else {
+      null
+    }
+    val cloudPose = cloud?.pose
+    val restorePosition = cloudPose?.let { ArMath.Vec3(it.tx(), it.ty(), it.tz()) }
+      ?: requested?.let { ArMath.Vec3(it.x.toFloat(), it.y.toFloat(), it.z.toFloat()) }
+    val restoreYaw = cloudPose?.let { atan2(it.zAxis[0], it.zAxis[2]) } ?: requested?.yaw?.toFloat()
+    val isRestore = restorePosition != null && restoreYaw != null
 
     val isWall = record.category == WALL_ART_CATEGORY
     val cameraPose = frame.camera.pose
@@ -511,11 +576,37 @@ class FurnitureARView(context: Context, appContext: AppContext) : ExpoView(conte
     val centerY = view.height / 2f
 
     // Floor items: on the floor, facing the camera. Wall items: centered on the wall spot,
-    // back flat on the wall, facing out of it toward the room.
+    // back flat on the wall, facing out of it toward the room. Restoring (a cloud anchor or an
+    // explicit pose): there; floor items at the height of the floor plane under it if one is
+    // detected (settleFloorItems refines it), wall items snapped onto the detected wall they
+    // belong to, if any (refineWallItems does the rest).
     val position: Position
     val yaw: Float
-    val host: Trackable
-    if (isWall) {
+    val host: Trackable?
+    if (restorePosition != null && restoreYaw != null) {
+      val snap = if (isWall) ArMath.snapToWall(restorePosition.x, restorePosition.z, restoreYaw, walls.map { it.segment }) else null
+      val x = snap?.x ?: restorePosition.x
+      val z = snap?.z ?: restorePosition.z
+      yaw = snap?.yawRadians ?: restoreYaw
+      val floorPlane = if (isWall) null else floorPlaneAt(x, z)
+      host = floorPlane
+      // Floor items stand on today's floor, not at the saved height: ARCore's floor estimate
+      // drifts a few cm between placements and sessions, which would sink or lift them. A cloud
+      // anchor's own height is a measurement of the floor, better than the lowest plane.
+      val y = when {
+        isWall -> restorePosition.y
+        floorPlane != null -> floorPlane.centerPose.ty()
+        cloud != null -> restorePosition.y
+        else -> floorY ?: restorePosition.y
+      }
+      position = Position(x, y, z)
+      if (isWall && !isAboveFloor(position.y, dims.height.toFloat())) {
+        runCatching { cloud?.detach() }
+        onPlacementBlocked(mapOf("instanceId" to record.instanceId, "reason" to "noWall"))
+        promise.reject("PLACEMENT_BLOCKED", "It would go into the floor.", null)
+        return
+      }
+    } else if (isWall) {
       val spot = wallSpotAt(centerX, centerY, camera)
       if (spot == null) {
         onPlacementBlocked(mapOf("instanceId" to record.instanceId, "reason" to "noWall"))
@@ -544,27 +635,36 @@ class FurnitureARView(context: Context, appContext: AppContext) : ExpoView(conte
     }
 
     // Never create a collision by placing: refuse spots across a wall or on another item.
-    val footprint = footprintAt(isWall, position, yaw, dims.width.toFloat(), dims.depth.toFloat(), dims.height.toFloat())
-    val blockedBy = CollisionMath.blockedReason(
-      moving = CollisionMath.Body(record.instanceId, footprint, record.category == FLOOR_COVERING_CATEGORY, isWall),
-      candidate = footprint,
-      current = null,
-      others = items.values.map(::bodyOf),
-      walls = walls,
-    )
-    if (blockedBy != null) {
-      onPlacementBlocked(mapOf("instanceId" to record.instanceId, "reason" to blockedBy.jsName))
-      val surface = if (isWall) "wall" else "floor"
-      promise.reject("PLACEMENT_BLOCKED", "That spot is taken. Aim at a free area of the $surface.", null)
-      return
+    // Restored items are exempt (CLAUDE.md 4.4 rule 13): the saved arrangement was valid, and
+    // today's anchor/wall/floor estimates are each a few cm off, so a chair saved against a wall
+    // or a painting on it would otherwise go missing. The escape rule lets the user move them.
+    if (!isRestore) {
+      val footprint = footprintAt(isWall, position, yaw, dims.width.toFloat(), dims.depth.toFloat(), dims.height.toFloat())
+      val blockedBy = CollisionMath.blockedReason(
+        moving = CollisionMath.Body(record.instanceId, footprint, record.category == FLOOR_COVERING_CATEGORY, isWall),
+        candidate = footprint,
+        current = null,
+        others = items.values.map(::bodyOf),
+        walls = walls,
+      )
+      if (blockedBy != null) {
+        onPlacementBlocked(mapOf("instanceId" to record.instanceId, "reason" to blockedBy.jsName))
+        val surface = if (isWall) "wall" else "floor"
+        promise.reject("PLACEMENT_BLOCKED", "That spot is taken. Aim at a free area of the $surface.", null)
+        return
+      }
     }
 
     val anchor = createAnchorOn(session, host, position.x, position.y, position.z)
 
     val item = createItem(record, AnchorNode(view.engine, anchor), yaw, isWall)
     item.hostPlane = host
+    item.cloudAnchor = cloud
+    item.cloudAnchorId = if (cloud != null) cloudId else null
     items[item.instanceId] = item
-    select(item) // footprint shows where the model will appear while it downloads
+    // Footprint shows where the model will appear while it downloads (not when rebuilding a
+    // scene: the item the user aimed stays selected).
+    if (!isRestore) select(item)
 
     scope.launch {
       try {
@@ -596,6 +696,7 @@ class FurnitureARView(context: Context, appContext: AppContext) : ExpoView(conte
 
   fun clearScene(promise: Promise) {
     items.values.toList().forEach { removeItemInternal(it) }
+    releaseUnclaimedAnchors()
     promise.resolve(null)
   }
 
@@ -605,13 +706,17 @@ class FurnitureARView(context: Context, appContext: AppContext) : ExpoView(conte
       promise.reject("NOT_READY", "AR view is not ready.", null)
       return
     }
-    // Hide selection footprints so the photo shows only the room and the furniture.
+    // Hide selection footprints and controls so the photo shows only the room and the furniture.
     items.values.forEach { it.footprint.isVisible = false }
+    controlsHidden = true
+    updateControls()
     // Wait for a couple of frames without the overlay before copying the surface.
     view.postDelayed({
       val bitmap = Bitmap.createBitmap(view.width, view.height, Bitmap.Config.ARGB_8888)
       PixelCopy.request(view, bitmap, { result ->
         restoreFootprints()
+        controlsHidden = false
+        updateControls()
         if (result != PixelCopy.SUCCESS) {
           promise.reject("SNAPSHOT_FAILED", "Could not capture the AR view (code $result).", null)
           return@request
@@ -628,6 +733,377 @@ class FurnitureARView(context: Context, appContext: AppContext) : ExpoView(conte
         }
       }, mainHandler)
     }, SNAPSHOT_DELAY_MS)
+  }
+
+  fun getPlacedItems(promise: Promise) {
+    promise.resolve(
+      items.values.filter { !it.isLoading }.map { item ->
+        val p = item.pivot.worldPosition
+        buildMap {
+          put("instanceId", item.instanceId)
+          put("productId", item.productId)
+          put(
+            "pose",
+            mapOf("x" to p.x.toDouble(), "y" to p.y.toDouble(), "z" to p.z.toDouble(), "yaw" to item.yawRadians.toDouble()),
+          )
+          item.cloudAnchorId?.let { put("cloudAnchorId", it) }
+        }
+      },
+    )
+  }
+
+  // ---------------------------------------------------------------------------------------
+  // Cloud anchors: a saved scene's spot in the room
+  // ---------------------------------------------------------------------------------------
+
+  /** Host requests waiting until their item has been seen well enough (see checkPendingHosts). */
+  private class PendingHost(val item: PlacedItem, val promise: Promise, val deadlineNs: Long) {
+    var lastQuality: Session.FeatureMapQuality? = null
+  }
+  private val pendingHosts = mutableListOf<PendingHost>()
+
+  /** Uploads in progress. */
+  private val hostTasks = HashMap<HostCloudAnchorFuture, Promise>()
+
+  /** Anchors being looked for, by cloud anchor id. */
+  private val resolveTasks = HashMap<String, Pair<ResolveCloudAnchorFuture, Promise>>()
+
+  /** Found anchors whose pose is settling before they are reported (see settleResolvedAnchors). */
+  private class SettlingAnchor(val anchor: Anchor, val promise: Promise, val foundNs: Long) {
+    var trackedSinceNs: Long? = null
+  }
+  private val settlingAnchors = HashMap<String, SettlingAnchor>()
+
+  /** Found anchors reported to JS, waiting for `placeItem({ cloudAnchorId })` to take them. */
+  private val resolvedAnchors = HashMap<String, Anchor>()
+
+  /**
+   * Hosting needs the spot seen from a few angles. Each request waits until its item has been
+   * in view while ARCore rates what it sees good enough (`estimateFeatureMapQualityForHosting`
+   * not INSUFFICIENT, checked every frame, like Google's Cloud Anchors sample), then uploads an
+   * anchor at the item's pose. After [CLOUD_ANCHOR_MAPPING_TIMEOUT_MS] it uploads anyway and
+   * lets the server decide (on device the estimate sometimes stayed INSUFFICIENT in a normal,
+   * lit room); a real shortage then fails as `CLOUD_ANCHOR_LOW_QUALITY`.
+   */
+  fun hostItemAnchor(instanceId: String, promise: Promise) {
+    if (sceneView?.session == null) {
+      Log.w(TAG, "hostItemAnchor($instanceId): no AR session")
+      promise.reject("NOT_READY", "AR is not running yet.", null)
+      return
+    }
+    val item = items[instanceId]
+    if (item == null || item.isLoading) {
+      Log.w(TAG, "hostItemAnchor($instanceId): no such placed item (loading: ${item?.isLoading})")
+      promise.reject("INVALID_ITEM", "No placed item $instanceId.", null)
+      return
+    }
+    pendingHosts.filter { it.item === item }.forEach {
+      pendingHosts.remove(it)
+      it.promise.reject("CANCELLED", "A newer request replaced this one.", null)
+    }
+    pendingHosts += PendingHost(item, promise, SystemClock.elapsedRealtimeNanos() + CLOUD_ANCHOR_MAPPING_TIMEOUT_MS * 1_000_000)
+    Log.i(TAG, "Waiting to host a cloud anchor for ${item.productId} (${pendingHosts.size} waiting)")
+  }
+
+  private fun checkPendingHosts(session: Session, frame: Frame) {
+    if (pendingHosts.isEmpty()) return
+    val view = sceneView ?: return
+    val now = SystemClock.elapsedRealtimeNanos()
+    val camera = frame.camera
+    val tracking = camera.trackingState == TrackingState.TRACKING
+    val viewMatrix = FloatArray(16)
+    val projection = FloatArray(16)
+    if (tracking) {
+      camera.getViewMatrix(viewMatrix, 0)
+      camera.getProjectionMatrix(projection, 0, NEAR_M, FAR_M)
+    }
+    val cameraPose = camera.pose
+    val viewer = ArMath.Vec3(cameraPose.tx(), cameraPose.ty(), cameraPose.tz())
+    // One estimate per frame, shared by the items in view (it rates what the camera sees).
+    val quality by lazy { runCatching { session.estimateFeatureMapQualityForHosting(cameraPose) }.getOrNull() }
+    for (request in pendingHosts.toList()) {
+      val item = request.item
+      if (items[item.instanceId] !== item) {
+        pendingHosts.remove(request)
+        Log.w(TAG, "Hosting for ${item.productId} cancelled: the item was removed")
+        request.promise.reject("CANCELLED", "The item was removed.", null)
+        continue
+      }
+      if (tracking && isInView(item, viewer, viewMatrix, projection, view.width, view.height)) {
+        if (quality != request.lastQuality) {
+          Log.i(TAG, "Mapping quality around ${item.productId}: $quality")
+          request.lastQuality = quality
+        }
+        if (quality != null && quality != Session.FeatureMapQuality.INSUFFICIENT) {
+          pendingHosts.remove(request)
+          startHosting(session, item, request.promise)
+          continue
+        }
+      }
+      if (now > request.deadlineNs) {
+        pendingHosts.remove(request)
+        Log.i(TAG, "Mapping around ${item.productId} still ${request.lastQuality} after the wait; hosting anyway")
+        startHosting(session, item, request.promise)
+      }
+    }
+  }
+
+  /** Whether an item is on screen and close enough for what the camera sees to count for it. */
+  private fun isInView(item: PlacedItem, viewer: ArMath.Vec3, viewMatrix: FloatArray, projection: FloatArray, width: Int, height: Int): Boolean {
+    val p = item.pivot.worldPosition
+    val center = if (item.isWallMounted) ArMath.Vec3(p.x, p.y, p.z) else ArMath.Vec3(p.x, p.y + item.height / 2f, p.z)
+    val d = center - viewer
+    if (ArMath.dot(d, d) > CLOUD_ANCHOR_VIEW_DISTANCE_M * CLOUD_ANCHOR_VIEW_DISTANCE_M) return false
+    val (x, y) = ArMath.project(center, width, height, viewMatrix, projection) ?: return false
+    return x in 0f..width.toFloat() && y in 0f..height.toFloat()
+  }
+
+  private fun startHosting(session: Session, item: PlacedItem, promise: Promise) {
+    val p = item.pivot.worldPosition
+    val half = item.yawRadians / 2f // rotation around +Y only: (x, y, z, w)
+    val movesAtStart = item.userMoves
+    val anchor = session.createAnchor(Pose(floatArrayOf(p.x, p.y, p.z), floatArrayOf(0f, sin(half), 0f, cos(half))))
+    lateinit var future: HostCloudAnchorFuture
+    future = session.hostCloudAnchorAsync(anchor, CLOUD_ANCHOR_TTL_DAYS) { cloudAnchorId, state ->
+      mainHandler.post {
+        runCatching { anchor.detach() }
+        if (hostTasks.remove(future) == null) return@post // cancelled
+        Log.i(TAG, "Hosting cloud anchor for ${item.productId} finished: $state")
+        if (state == Anchor.CloudAnchorState.SUCCESS && cloudAnchorId != null) {
+          // The anchor marks the item's spot, unless the user has moved it meanwhile.
+          if (items[item.instanceId] === item && item.userMoves == movesAtStart) item.cloudAnchorId = cloudAnchorId
+          promise.resolve(mapOf("cloudAnchorId" to cloudAnchorId, "ttlDays" to CLOUD_ANCHOR_TTL_DAYS))
+        } else {
+          val (code, message) = cloudAnchorError(state)
+          promise.reject(code, message, null)
+        }
+      }
+    }
+    hostTasks[future] = promise
+  }
+
+  fun resolveCloudAnchor(cloudAnchorId: String, promise: Promise) {
+    val session = sceneView?.session
+    if (session == null) {
+      promise.reject("NOT_READY", "AR is not running yet.", null)
+      return
+    }
+    resolvedAnchors[cloudAnchorId]?.let {
+      promise.resolve(poseMapOf(it.pose))
+      return
+    }
+    resolveTasks.remove(cloudAnchorId)?.let { (future, previous) ->
+      future.cancel()
+      previous.reject("CANCELLED", "A newer request replaced this one.", null)
+    }
+    settlingAnchors.remove(cloudAnchorId)?.let {
+      runCatching { it.anchor.detach() }
+      it.promise.reject("CANCELLED", "A newer request replaced this one.", null)
+    }
+    lateinit var future: ResolveCloudAnchorFuture
+    future = session.resolveCloudAnchorAsync(cloudAnchorId) { anchor, state ->
+      mainHandler.post {
+        if (resolveTasks[cloudAnchorId]?.first !== future) {
+          runCatching { anchor?.detach() }
+          return@post
+        }
+        resolveTasks.remove(cloudAnchorId)
+        if (state == Anchor.CloudAnchorState.SUCCESS && anchor != null) {
+          Log.i(TAG, "Cloud anchor $cloudAnchorId found; letting it settle")
+          settlingAnchors[cloudAnchorId] = SettlingAnchor(anchor, promise, SystemClock.elapsedRealtimeNanos())
+        } else {
+          val (code, message) = cloudAnchorError(state)
+          Log.w(TAG, "Resolving cloud anchor $cloudAnchorId failed: $state")
+          promise.reject(code, message, null)
+        }
+      }
+    }
+    resolveTasks[cloudAnchorId] = future to promise
+  }
+
+  /**
+   * ARCore keeps refining a cloud anchor for a moment after recognizing it, and the first pose
+   * is the roughest. A found anchor is reported once it has been tracked for
+   * [CLOUD_ANCHOR_SETTLE_MS] (at most [CLOUD_ANCHOR_SETTLE_MAX_MS] after it was found).
+   */
+  private fun settleResolvedAnchors() {
+    if (settlingAnchors.isEmpty()) return
+    val now = SystemClock.elapsedRealtimeNanos()
+    for ((id, settling) in settlingAnchors.toList()) {
+      when (settling.anchor.trackingState) {
+        TrackingState.STOPPED -> {
+          settlingAnchors.remove(id)
+          settling.promise.reject("CLOUD_ANCHOR_FAILED", "Lost the scene's spot again.", null)
+          continue
+        }
+        TrackingState.TRACKING -> if (settling.trackedSinceNs == null) settling.trackedSinceNs = now
+        else -> settling.trackedSinceNs = null
+      }
+      val trackedSince = settling.trackedSinceNs
+      val settled = trackedSince != null && now - trackedSince >= CLOUD_ANCHOR_SETTLE_MS * 1_000_000
+      if (settled || now - settling.foundNs >= CLOUD_ANCHOR_SETTLE_MAX_MS * 1_000_000) {
+        settlingAnchors.remove(id)
+        resolvedAnchors[id] = settling.anchor
+        Log.i(TAG, "Cloud anchor $id settled")
+        settling.promise.resolve(poseMapOf(settling.anchor.pose))
+      }
+    }
+  }
+
+  fun stopResolvingCloudAnchors(promise: Promise) {
+    stopResolving()
+    promise.resolve(null)
+  }
+
+  private fun stopResolving() {
+    val tasks = resolveTasks.values.toList()
+    resolveTasks.clear()
+    tasks.forEach { (future, promise) ->
+      future.cancel()
+      promise.reject("CANCELLED", "Stopped looking for the scene's spot.", null)
+    }
+    val settling = settlingAnchors.values.toList()
+    settlingAnchors.clear()
+    settling.forEach {
+      runCatching { it.anchor.detach() }
+      it.promise.reject("CANCELLED", "Stopped looking for the scene's spot.", null)
+    }
+  }
+
+  /** Found anchors no item took (e.g. the scene was cleared meanwhile). */
+  private fun releaseUnclaimedAnchors() {
+    resolvedAnchors.values.forEach { runCatching { it.detach() } }
+    resolvedAnchors.clear()
+  }
+
+  private fun cancelCloudAnchorTasks() {
+    stopResolving()
+    releaseUnclaimedAnchors()
+    cancelHosts("The AR view was closed.")
+  }
+
+  private fun cancelHosts(reason: String) {
+    val pending = pendingHosts.toList()
+    pendingHosts.clear()
+    pending.forEach { it.promise.reject("CANCELLED", reason, null) }
+    val uploads = hostTasks.toList()
+    hostTasks.clear()
+    uploads.forEach { (future, promise) ->
+      future.cancel()
+      promise.reject("CANCELLED", reason, null)
+    }
+  }
+
+  /** Position and yaw (from the local +Z axis) of an anchor pose, for JS. */
+  private fun poseMapOf(pose: Pose): Map<String, Double> {
+    val front = pose.zAxis
+    return mapOf(
+      "x" to pose.tx().toDouble(),
+      "y" to pose.ty().toDouble(),
+      "z" to pose.tz().toDouble(),
+      "yaw" to atan2(front[0], front[2]).toDouble(),
+    )
+  }
+
+  /**
+   * Restored items stay on their cloud anchor while ARCore refines it: every frame they are
+   * eased toward its current pose ([ArMath.followStep]; floor items in X/Z and yaw, their height
+   * is the floor's; wall items only along their wall). Until the user moves them.
+   */
+  private fun followCloudAnchors() {
+    for (item in items.values) {
+      val anchor = item.cloudAnchor ?: continue
+      if (anchor.trackingState != TrackingState.TRACKING || item === dragging || pressedHandle?.first === item) continue
+      val pose = anchor.pose
+      val p = item.pivot.worldPosition
+      val step = ArMath.followStep(
+        ArMath.Vec3(p.x, p.y, p.z), ArMath.Vec3(pose.tx(), pose.ty(), pose.tz()),
+        item.yawRadians, item.isWallMounted, CLOUD_FOLLOW_GAIN, CLOUD_FOLLOW_DEADBAND_M,
+      )
+      if (step.x != 0f || step.y != 0f || step.z != 0f) item.pivot.worldPosition = Position(p.x + step.x, p.y + step.y, p.z + step.z)
+      if (!item.isWallMounted) {
+        val front = pose.zAxis
+        val turn = ArMath.angleDelta(item.yawRadians, atan2(front[0], front[2]))
+        if (abs(turn) >= CLOUD_FOLLOW_DEADBAND_RAD) applyYaw(item, item.yawRadians + turn * CLOUD_FOLLOW_GAIN)
+      }
+    }
+  }
+
+  /** The user moved [item] (drag, arrows, twist): it no longer follows nor marks its cloud anchor. */
+  private fun userMoved(item: PlacedItem) {
+    item.userMoves++
+    item.cloudAnchorId = null
+    item.cloudAnchor?.let { runCatching { it.detach() } }
+    item.cloudAnchor = null
+  }
+
+  // ---------------------------------------------------------------------------------------
+  // Floor items: keep them standing on the floor
+  // ---------------------------------------------------------------------------------------
+
+  private var lastFloorSettleNs = 0L
+
+  /**
+   * Keeps floor items standing on the floor: about 5 times a second the floor under each one is
+   * measured, from the detected floor plane under its center or else from depth /
+   * feature-point hits spread under its footprint ([ArMath.floorFromSamples]), and the item is
+   * eased onto it (smoothed, 3 mm dead-band, offsets over 15 cm ignored as a bad sample or a
+   * table). Restored items start at the saved height and ARCore's floor estimate keeps
+   * improving after placement; without this they float or sink by a few cm. Once settled over
+   * a detected floor plane, an item is anchored on it so ARCore keeps it there.
+   */
+  private fun settleFloorItems(frame: Frame) {
+    if (frame.timestamp - lastFloorSettleNs < FLOOR_SETTLE_INTERVAL_NS) return
+    lastFloorSettleNs = frame.timestamp
+    val camera = frame.camera
+    if (camera.trackingState != TrackingState.TRACKING) return
+    val floorItems = items.values.filter { !it.isWallMounted && it !== dragging && pressedHandle?.first !== it }
+    if (floorItems.isEmpty()) return
+    val viewMatrix = FloatArray(16).also { camera.getViewMatrix(it, 0) }
+    val projection = FloatArray(16).also { camera.getProjectionMatrix(it, 0, NEAR_M, FAR_M) }
+    floorItems.forEach { settleFloorItem(it, viewMatrix, projection) }
+  }
+
+  private fun settleFloorItem(item: PlacedItem, viewMatrix: FloatArray, projection: FloatArray) {
+    val p = item.pivot.worldPosition
+    val plane = floorPlaneAt(p.x, p.z)
+    val floor = plane?.centerPose?.ty() ?: floorFromDepth(item, p, viewMatrix, projection) ?: return
+    val offset = floor - p.y
+    if (abs(offset) > FLOOR_SETTLE_MAX_OFFSET_M) return
+    if (abs(offset) >= FLOOR_SETTLE_DEADBAND_M) {
+      item.pivot.worldPosition = Position(p.x, p.y + offset * FLOOR_SETTLE_GAIN, p.z)
+    } else if (plane != null && item.hostPlane !is Plane && item.cloudAnchor == null) {
+      reanchor(item, plane)
+    }
+  }
+
+  /** Floor height under an item from depth / feature-point hits over its footprint, or null. */
+  private fun floorFromDepth(item: PlacedItem, p: Position, viewMatrix: FloatArray, projection: FloatArray): Float? {
+    val view = sceneView ?: return null
+    val expected = mutableListOf<ArMath.Vec3>()
+    val hits = mutableListOf<ArMath.Vec3?>()
+    for (u in FLOOR_SAMPLE_FRACTIONS) {
+      for (v in FLOOR_SAMPLE_FRACTIONS) {
+        val offset = ArMath.toWorld(ArMath.Vec3(u * item.width / 2f, 0f, v * item.depth / 2f), item.yawRadians)
+        val target = ArMath.Vec3(p.x + offset.x, p.y, p.z + offset.z)
+        val (x, y) = ArMath.project(target, view.width, view.height, viewMatrix, projection)
+          ?.takeIf { (x, y) -> x in 0f..view.width.toFloat() && y in 0f..view.height.toFloat() }
+          ?: continue
+        expected += target
+        hits += surfaceHitAt(x, y)?.hitPose?.let { ArMath.Vec3(it.tx(), it.ty(), it.tz()) }
+      }
+    }
+    return ArMath.floorFromSamples(expected, hits, FLOOR_SAMPLE_MAX_HORIZONTAL_M, FLOOR_SETTLE_MAX_OFFSET_M, FLOOR_SAMPLE_MIN_COUNT)
+  }
+
+  private fun cloudAnchorError(state: Anchor.CloudAnchorState): Pair<String, String> = when (state) {
+    Anchor.CloudAnchorState.ERROR_NOT_AUTHORIZED ->
+      "CLOUD_ANCHOR_NOT_AUTHORIZED" to "This app is not set up for ARCore Cloud Anchors yet."
+    Anchor.CloudAnchorState.ERROR_HOSTING_DATASET_PROCESSING_FAILED ->
+      "CLOUD_ANCHOR_LOW_QUALITY" to "Not enough of the room was seen. Walk around the furniture while pointing at it, then save again."
+    Anchor.CloudAnchorState.ERROR_CLOUD_ID_NOT_FOUND ->
+      "CLOUD_ANCHOR_NOT_FOUND" to "This scene's spot in the room has expired."
+    else -> "CLOUD_ANCHOR_FAILED" to "Could not reach ARCore Cloud Anchors (${state.name})."
   }
 
   // ---------------------------------------------------------------------------------------
@@ -726,17 +1202,42 @@ class FurnitureARView(context: Context, appContext: AppContext) : ExpoView(conte
     }
     item.pivot.addChildNode(modelNode)
     item.modelNode = modelNode
-    item.contactShadow.isVisible = true
+    // A model may bring its own contact shadow, baked in Blender (tools/models): darker under
+    // each leg, soft under the seat, much more convincing than our generic one. It is a flat,
+    // unlit, see-through quad on the floor: it must not cast or receive shadows itself.
+    val bakedShadow = runCatching { modelNode.model.getEntitiesByName(BAKED_SHADOW_NODE) }.getOrNull() ?: IntArray(0)
+    if (bakedShadow.isNotEmpty()) {
+      bakedShadow.forEach { disableShadows(view, it) }
+      item.hasBakedShadow = true
+    }
+    item.contactShadow.isVisible = !item.hasBakedShadow
+    if (selected === item) updateControls()
+  }
+
+  /** Turns off shadow casting/receiving for an entity and its children. */
+  private fun disableShadows(view: ARSceneView, entity: Int) {
+    val renderables = view.engine.renderableManager
+    renderables.getInstance(entity).takeIf { it != 0 }?.let {
+      renderables.setCastShadows(it, false)
+      renderables.setReceiveShadows(it, false)
+    }
+    val transforms = view.engine.transformManager
+    val transform = transforms.getInstance(entity).takeIf { it != 0 } ?: return
+    val children = IntArray(transforms.getChildCount(transform))
+    transforms.getChildren(transform, children)
+    children.forEach { disableShadows(view, it) }
   }
 
   private fun removeItemInternal(item: PlacedItem) {
-    if (selected === item) select(null)
+    if (selected === item) select(null) // also takes the controls off it
     items.remove(item.instanceId)
     destroyItem(item)
   }
 
   private fun destroyItem(item: PlacedItem) {
     val view = sceneView ?: return
+    item.cloudAnchor?.let { runCatching { it.detach() } }
+    item.cloudAnchor = null
     runCatching { item.anchorNode.anchor.detach() }
     view.removeChildNode(item.anchorNode)
     item.modelNode?.let { node ->
@@ -774,12 +1275,202 @@ class FurnitureARView(context: Context, appContext: AppContext) : ExpoView(conte
   // ---------------------------------------------------------------------------------------
 
   private fun select(item: PlacedItem?) {
-    if (selected === item) return
-    val previous = selected
-    selected = item
-    previous?.let { showFootprint(it) }
-    item?.let { showFootprint(it) }
-    onItemSelected(mapOf("instanceId" to item?.instanceId))
+    if (trashItem !== item) trashItem = null
+    if (selected !== item) {
+      val previous = selected
+      selected = item
+      previous?.let { showFootprint(it) }
+      item?.let { showFootprint(it) }
+      onItemSelected(mapOf("instanceId" to item?.instanceId))
+    }
+    updateControls()
+  }
+
+  // ---------------------------------------------------------------------------------------
+  // On-scene controls: move arrows and trash button
+  // ---------------------------------------------------------------------------------------
+
+  private fun createControls(view: ARSceneView) {
+    iconMaterial = view.materialLoader.createMaterial(ICON_MATERIAL)
+    fun icon(kind: Int, upright: Boolean, size: Float): MaterialInstance =
+      view.materialLoader.createInstance(iconMaterial).apply {
+        setParameter("kind", kind)
+        setParameter("plane", if (upright) 1 else 0)
+        setParameter("halfSize", size / 2f)
+        setParameter("opacity", 1f)
+      }.also { iconMaterialInstances += it }
+    fun quad(material: MaterialInstance, upright: Boolean, size: Float) = PlaneNode(
+      engine = view.engine,
+      // Flat quads span X/Z (on the floor), upright ones X/Y (on a wall, or facing the camera).
+      size = if (upright) Size(size, size, 0f) else Size(size, 0f, size),
+      center = Position(0f, 0f, 0f),
+      normal = if (upright) Direction(0f, 0f, 1f) else Direction(0f, 1f, 0f),
+      materialInstance = material,
+    ).apply {
+      isVisible = false
+      isHittable = false
+      isShadowCaster = false
+      isShadowReceiver = false
+    }
+    val flatArrow = icon(ICON_ARROW, upright = false, size = ARROW_SIZE_M)
+    val uprightArrow = icon(ICON_ARROW, upright = true, size = ARROW_SIZE_M)
+    floorArrows = ArMath.Handle.values().associateWith { quad(flatArrow, upright = false, size = ARROW_SIZE_M) }
+    wallArrows = ArMath.Handle.values().associateWith { quad(uprightArrow, upright = true, size = ARROW_SIZE_M) }
+    trashButton = quad(icon(ICON_TRASH, upright = true, size = TRASH_SIZE_M), upright = true, size = TRASH_SIZE_M)
+  }
+
+  private fun controlNodes(): List<PlaneNode> = floorArrows.values + wallArrows.values + trashButton
+
+  /**
+   * Puts the controls on the selected item (children of its pivot, so they follow drags,
+   * twists and wall refinement): the trash button if it was double tapped, else the arrows.
+   * Nothing while its model is loading or a snapshot is being taken.
+   */
+  private fun updateControls() {
+    if (!::trashButton.isInitialized) return
+    val item = selected?.takeIf { !it.isLoading && !controlsHidden }
+    val showTrash = item != null && trashItem === item
+    val arrows = if (item?.isWallMounted == true) wallArrows else floorArrows
+    val unused = if (arrows === wallArrows) floorArrows else wallArrows
+    unused.values.forEach { detachControl(it) }
+    arrows.forEach { (handle, node) ->
+      if (item == null || showTrash) {
+        detachControl(node)
+        return@forEach
+      }
+      val c = ArMath.handleCenter(
+        handle, item.isWallMounted, item.width, item.depth, item.height,
+        size = ARROW_SIZE_M, gap = ARROW_GAP_M, lift = if (item.isWallMounted) WALL_CONTROL_LIFT_M else ARROW_LIFT_M,
+      )
+      val angle = ArMath.handleAngleDegrees(handle)
+      attachControl(node, item, Position(c.x, c.y, c.z), if (item.isWallMounted) Rotation(0f, 0f, angle) else Rotation(0f, angle, 0f))
+    }
+    if (showTrash && item != null) {
+      // Floor items: floating above the item, turned to the camera every frame. Wall items:
+      // over the middle of the item, facing out of the wall.
+      val position = if (item.isWallMounted) {
+        Position(0f, 0f, item.depth + WALL_CONTROL_LIFT_M)
+      } else {
+        Position(0f, item.height + TRASH_ABOVE_M, 0f)
+      }
+      attachControl(trashButton, item, position, Rotation(0f, 0f, 0f))
+    } else {
+      detachControl(trashButton)
+    }
+  }
+
+  private fun attachControl(node: PlaneNode, item: PlacedItem, position: Position, rotation: Rotation) {
+    if (node.parent !== item.pivot) node.parent = item.pivot
+    node.position = position
+    node.rotation = rotation
+    node.isVisible = true
+  }
+
+  private fun detachControl(node: PlaneNode) {
+    node.isVisible = false
+    if (node.parent != null) node.parent = null
+  }
+
+  /** Keeps the trash button over a floor item facing the camera (yaw only, stays upright). */
+  private fun faceTrashToCamera(frame: Frame) {
+    val item = trashItem ?: return
+    if (item.isWallMounted || !trashButton.isVisible) return
+    val camera = frame.camera.pose
+    val p = item.pivot.worldPosition
+    val yaw = ArMath.yawFacing(from = ArMath.Vec3(p.x, p.y, p.z), target = ArMath.Vec3(camera.tx(), camera.ty(), camera.tz()))
+    trashButton.rotation = Rotation(0f, Math.toDegrees((yaw - item.yawRadians).toDouble()).toFloat(), 0f)
+  }
+
+  /** Whether a screen point is on a visible control (a finger-sized radius around its center). */
+  private fun isOnControl(node: PlaneNode, x: Float, y: Float): Boolean {
+    if (!node.isVisible || node.parent == null) return false
+    val p = node.worldPosition
+    val (sx, sy) = screenPointOf(ArMath.Vec3(p.x, p.y, p.z)) ?: return false
+    return hypot(sx - x, sy - y) <= CONTROL_TOUCH_RADIUS_DP * resources.displayMetrics.density
+  }
+
+  /** The selected item's arrow under a screen point (the closest, if several), or null. */
+  private fun pickHandle(x: Float, y: Float): ArMath.Handle? {
+    val item = selected ?: return null
+    if (trashItem === item) return null
+    val arrows = if (item.isWallMounted) wallArrows else floorArrows
+    return arrows.entries
+      .filter { isOnControl(it.value, x, y) }
+      .minByOrNull { (_, node) ->
+        val p = node.worldPosition
+        screenPointOf(ArMath.Vec3(p.x, p.y, p.z))?.let { (sx, sy) -> hypot(sx - x, sy - y) } ?: Float.MAX_VALUE
+      }?.key
+  }
+
+  /** Screen pixel of a world point from the current camera; null while not tracking or behind it. */
+  private fun screenPointOf(point: ArMath.Vec3): Pair<Float, Float>? {
+    val view = sceneView ?: return null
+    val camera = view.frame?.camera ?: return null
+    if (camera.trackingState != TrackingState.TRACKING) return null
+    val viewMatrix = FloatArray(16).also { camera.getViewMatrix(it, 0) }
+    val projection = FloatArray(16).also { camera.getProjectionMatrix(it, 0, NEAR_M, FAR_M) }
+    return ArMath.project(point, view.width, view.height, viewMatrix, projection)
+  }
+
+  /** The user deleted an item with the trash button. */
+  private fun deleteByUser(item: PlacedItem) {
+    removeItemInternal(item)
+    onItemRemoved(mapOf("instanceId" to item.instanceId, "productId" to item.productId))
+  }
+
+  // Arrow presses: one step on touch down, then repeating while the finger stays down.
+  private var pressedHandle: Pair<PlacedItem, ArMath.Handle>? = null
+  private val repeatNudge = object : Runnable {
+    override fun run() {
+      val (item, handle) = pressedHandle ?: return
+      if (items[item.instanceId] !== item) return
+      nudge(item, handle)
+      mainHandler.postDelayed(this, NUDGE_REPEAT_MS)
+    }
+  }
+
+  private fun startHandlePress(item: PlacedItem, handle: ArMath.Handle) {
+    userMoved(item)
+    pressedHandle = item to handle
+    lastBlockedReason = null
+    nudge(item, handle)
+    mainHandler.postDelayed(repeatNudge, NUDGE_REPEAT_DELAY_MS)
+  }
+
+  private fun endHandlePress() {
+    val (item, _) = pressedHandle ?: return
+    pressedHandle = null
+    mainHandler.removeCallbacks(repeatNudge)
+    lastBlockedReason = null
+    if (items[item.instanceId] !== item) return
+    val p = item.pivot.worldPosition
+    reanchor(item, if (item.isWallMounted) null else floorPlaneAt(p.x, p.z))
+  }
+
+  /**
+   * Moves an item one step toward a handle (item-local direction, so "left" is the item's
+   * left), with the same rules as a drag: collisions, floor items stay over the detected
+   * floor, wall items above the floor.
+   */
+  private fun nudge(item: PlacedItem, handle: ArMath.Handle) {
+    val step = ArMath.toWorld(ArMath.handleDirection(handle, item.isWallMounted), item.yawRadians) * NUDGE_STEP_M
+    val p = item.pivot.worldPosition
+    val target = Position(p.x + step.x, p.y + step.y, p.z + step.z)
+    if (item.isWallMounted && !isAboveFloor(target.y, item.height)) {
+      blocked(item, "noWall")
+      return
+    }
+    if (!item.isWallMounted && floorPlaneAt(target.x, target.z) == null) {
+      blocked(item, "noFloor")
+      return
+    }
+    val reason = validateMove(item, target, item.yawRadians)
+    if (reason != null) {
+      blocked(item, reason)
+      return
+    }
+    lastBlockedReason = null
+    item.pivot.worldPosition = target
   }
 
   /**
@@ -809,9 +1500,14 @@ class FurnitureARView(context: Context, appContext: AppContext) : ExpoView(conte
   }
 
   // ---------------------------------------------------------------------------------------
-  // Gestures: tap = select, one-finger drag = move on the floor (wall items: along their
-  // wall), two-finger twist = yaw (floor items only)
+  // Gestures: tap = select, double tap = trash button, press an arrow = nudge, one-finger
+  // drag = move on the floor (wall items: along their wall), two-finger twist = yaw (floor
+  // items only)
   // ---------------------------------------------------------------------------------------
+
+  /** Last tap on an item, to detect a double tap. */
+  private var lastTapItem: PlacedItem? = null
+  private var lastTapTime = 0L
 
   private var downX = 0f
   private var downY = 0f
@@ -837,11 +1533,21 @@ class FurnitureARView(context: Context, appContext: AppContext) : ExpoView(conte
         downTime = event.eventTime
         gestureConsumed = false
         twistAngle = null
+        val handle = pickHandle(event.x, event.y)
+        val item = selected
+        if (handle != null && item != null) {
+          // Arrows win over the item behind them; the press is neither a tap nor a drag.
+          gestureConsumed = true
+          touchCandidate = null
+          startHandlePress(item, handle)
+          return true
+        }
         touchCandidate = pickItem(event.x, event.y)
       }
 
       MotionEvent.ACTION_POINTER_DOWN -> {
         gestureConsumed = true
+        endHandlePress()
         endDrag()
         if (event.pointerCount >= 2 && selected?.isWallMounted == false) {
           twistAngle = ArMath.twistAngle(event.getX(0), event.getY(0), event.getX(1), event.getY(1))
@@ -868,16 +1574,18 @@ class FurnitureARView(context: Context, appContext: AppContext) : ExpoView(conte
       }
 
       MotionEvent.ACTION_UP -> {
+        endHandlePress()
         val wasDragging = dragging != null
         endDrag()
         val isTap = !wasDragging && !gestureConsumed &&
           event.eventTime - downTime < TAP_TIMEOUT_MS &&
           hypot(event.x - downX, event.y - downY) <= touchSlop
-        if (isTap) onTap(event.x, event.y)
+        if (isTap) onTap(event.x, event.y, event.eventTime)
         twistAngle = null
       }
 
       MotionEvent.ACTION_CANCEL -> {
+        endHandlePress()
         endDrag()
         twistAngle = null
       }
@@ -885,8 +1593,27 @@ class FurnitureARView(context: Context, appContext: AppContext) : ExpoView(conte
     return true
   }
 
-  private fun onTap(x: Float, y: Float) {
+  private fun onTap(x: Float, y: Float, time: Long) {
+    trashItem?.let { item ->
+      if (isOnControl(trashButton, x, y)) {
+        deleteByUser(item)
+        lastTapItem = null
+        return
+      }
+      // A tap anywhere else dismisses the trash button (and is handled as a normal tap).
+      trashItem = null
+      updateControls()
+    }
     val item = pickItem(x, y)
+    if (item != null && item === lastTapItem && time - lastTapTime <= DOUBLE_TAP_MS) {
+      lastTapItem = null
+      select(item)
+      trashItem = item
+      updateControls()
+      return
+    }
+    lastTapItem = item
+    lastTapTime = time
     select(item)
     if (item != null) {
       onItemTapped(mapOf("instanceId" to item.instanceId, "productId" to item.productId))
@@ -931,7 +1658,9 @@ class FurnitureARView(context: Context, appContext: AppContext) : ExpoView(conte
   }
 
   private fun beginDrag(item: PlacedItem, x: Float, y: Float) {
+    trashItem = null
     select(item)
+    userMoved(item)
     dragging = item
     lastBlockedReason = null
     val p = item.pivot.worldPosition
@@ -1006,6 +1735,7 @@ class FurnitureARView(context: Context, appContext: AppContext) : ExpoView(conte
       return
     }
     lastBlockedReason = null
+    userMoved(item)
     applyYaw(item, newYaw)
   }
 
@@ -1106,6 +1836,54 @@ class FurnitureARView(context: Context, appContext: AppContext) : ExpoView(conte
      */
     const val DEPTH_OCCLUSION_ENABLED = false
     const val CONTACT_SHADOW_MATERIAL = "materials/furniture_contact_shadow.filamat"
+    const val ICON_MATERIAL = "materials/furniture_icon.filamat"
+    /** How long a saved scene's cloud anchor lives (ARCore's maximum; needs keyless auth). */
+    const val CLOUD_ANCHOR_TTL_DAYS = 365
+    /**
+     * How long a save waits for the user to show ARCore enough of the spot. Was 40 s: on device
+     * the local estimate never left INSUFFICIENT, so every save waited the full time, and every
+     * upload after the wait succeeded.
+     */
+    const val CLOUD_ANCHOR_MAPPING_TIMEOUT_MS = 15_000L
+    /** For hosting, an item counts as seen when it is on screen and this close to the camera. */
+    const val CLOUD_ANCHOR_VIEW_DISTANCE_M = 5f
+    /** A found cloud anchor is reported after being tracked this long (at most the max). */
+    const val CLOUD_ANCHOR_SETTLE_MS = 1_500L
+    const val CLOUD_ANCHOR_SETTLE_MAX_MS = 4_000L
+    /** Restored items follow their cloud anchor: share of the gap closed per frame, dead-bands. */
+    const val CLOUD_FOLLOW_GAIN = 0.15f
+    const val CLOUD_FOLLOW_DEADBAND_M = 0.002f
+    const val CLOUD_FOLLOW_DEADBAND_RAD = 0.003f
+    /** Floor settling: how often, dead-band, largest believable offset, share fixed per pass. */
+    const val FLOOR_SETTLE_INTERVAL_NS = 200_000_000L
+    const val FLOOR_SETTLE_DEADBAND_M = 0.003f
+    const val FLOOR_SETTLE_MAX_OFFSET_M = 0.15f
+    const val FLOOR_SETTLE_GAIN = 0.3f
+    /** Depth samples under a floor item: a 3x3 grid at these shares of its half width/depth. */
+    val FLOOR_SAMPLE_FRACTIONS = floatArrayOf(-0.6f, 0f, 0.6f)
+    const val FLOOR_SAMPLE_MAX_HORIZONTAL_M = 0.12f
+    const val FLOOR_SAMPLE_MIN_COUNT = 4
+    /** A model's own baked contact shadow: the glTF node with this name (tools/models/README.md). */
+    const val BAKED_SHADOW_NODE = "ContactShadow"
+    /** `kind` values of furniture_icon.mat. */
+    const val ICON_ARROW = 0
+    const val ICON_TRASH = 1
+    /** Move arrows: size, distance from the item's edge, height above the floor (over the footprint). */
+    const val ARROW_SIZE_M = 0.14f
+    const val ARROW_GAP_M = 0.05f
+    const val ARROW_LIFT_M = 0.012f
+    /** Wall items: controls this far in front of the wall. */
+    const val WALL_CONTROL_LIFT_M = 0.008f
+    const val TRASH_SIZE_M = 0.16f
+    /** Trash button over a floor item: this far above its top. */
+    const val TRASH_ABOVE_M = 0.14f
+    /** Touch radius around a control's center (dp). */
+    const val CONTROL_TOUCH_RADIUS_DP = 32f
+    /** One arrow tap moves this far; holding repeats after a delay. */
+    const val NUDGE_STEP_M = 0.05f
+    const val NUDGE_REPEAT_DELAY_MS = 400L
+    const val NUDGE_REPEAT_MS = 110L
+    const val DOUBLE_TAP_MS = 350L
     /** Shadow fades out this far beyond the footprint: fixed part + share of the smaller side. */
     const val CONTACT_SHADOW_PADDING_M = 0.08f
     const val CONTACT_SHADOW_PADDING_RATIO = 0.15f

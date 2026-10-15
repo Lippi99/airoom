@@ -1,4 +1,4 @@
-import type { Category, ClickEvent, Product, Retailer } from './entities';
+import type { Category, ClickEvent, Product, Retailer, Scene } from './entities';
 
 export interface ProductFilter {
   categoryId?: string;
@@ -24,4 +24,14 @@ export interface RetailerRepository {
 export interface ClickEventRepository {
   save(event: ClickEvent): Promise<void>;
   countByProduct(productId: string): Promise<number>;
+}
+
+export interface SceneRepository {
+  /** Most recently updated first. */
+  findAll(): Promise<Scene[]>;
+  findById(id: string): Promise<Scene | null>;
+  /** Inserts or replaces the scene with the same id. */
+  save(scene: Scene): Promise<void>;
+  /** Returns false when there was no such scene. */
+  delete(id: string): Promise<boolean>;
 }

@@ -239,4 +239,109 @@ class ArMathTest {
     // Behind the camera: no pixel.
     assertNull(ArMath.project(Vec3(0f, 1.5f, 5f), 1000, 2000, view, projection))
   }
+
+  @Test
+  fun `toWorld is the inverse of toLocal and maps the local axes`() {
+    val yaw = 0.7f
+    val v = Vec3(0.3f, 1.2f, -0.8f)
+    val back = ArMath.toLocal(ArMath.toWorld(v, yaw), yaw)
+    assertEquals(v.x, back.x, eps)
+    assertEquals(v.y, back.y, eps)
+    assertEquals(v.z, back.z, eps)
+    // Local +Z is the item's front.
+    val front = ArMath.toWorld(Vec3(0f, 0f, 1f), yaw)
+    assertEquals(ArMath.forward(yaw).x, front.x, eps)
+    assertEquals(ArMath.forward(yaw).z, front.z, eps)
+  }
+
+  @Test
+  fun `handles move floor items along the floor and wall items along the wall`() {
+    assertEquals(Vec3(0f, 0f, -1f), ArMath.handleDirection(ArMath.Handle.TOP, isWall = false))
+    assertEquals(Vec3(0f, 0f, 1f), ArMath.handleDirection(ArMath.Handle.BOTTOM, isWall = false))
+    assertEquals(Vec3(0f, 1f, 0f), ArMath.handleDirection(ArMath.Handle.TOP, isWall = true))
+    assertEquals(Vec3(-1f, 0f, 0f), ArMath.handleDirection(ArMath.Handle.LEFT, isWall = true))
+  }
+
+  @Test
+  fun `handle arrows sit just outside the edge they point to`() {
+    // 2 m x 1 m sofa, 0.1 m arrows, 0.05 m gap: right arrow center at 1 + 0.05 + 0.05.
+    val right = ArMath.handleCenter(ArMath.Handle.RIGHT, false, 2f, 1f, 0.8f, size = 0.1f, gap = 0.05f, lift = 0.01f)
+    assertEquals(Vec3(1.1f, 0.01f, 0f), right)
+    val top = ArMath.handleCenter(ArMath.Handle.TOP, false, 2f, 1f, 0.8f, size = 0.1f, gap = 0.05f, lift = 0.01f)
+    assertEquals(-0.6f, top.z, eps)
+    // Wall art 1.2 x 0.9: the top arrow is above the frame, on the wall.
+    val up = ArMath.handleCenter(ArMath.Handle.TOP, true, 1.2f, 0.04f, 0.9f, size = 0.1f, gap = 0.05f, lift = 0.01f)
+    assertEquals(0.55f, up.y, eps)
+    assertEquals(0.01f, up.z, eps)
+  }
+
+  @Test
+  fun `handle angles turn the arrow drawn toward +X into its direction`() {
+    for (handle in ArMath.Handle.values()) {
+      val a = Math.toRadians(ArMath.handleAngleDegrees(handle).toDouble())
+      // Floor arrows turn around +Y: +X -> (cos, 0, -sin).
+      val floor = ArMath.handleDirection(handle, isWall = false)
+      assertEquals(floor.x, kotlin.math.cos(a).toFloat(), eps)
+      assertEquals(floor.z, -kotlin.math.sin(a).toFloat(), eps)
+      // Wall arrows turn around +Z: +X -> (cos, sin, 0).
+      val wall = ArMath.handleDirection(handle, isWall = true)
+      assertEquals(wall.x, kotlin.math.cos(a).toFloat(), eps)
+      assertEquals(wall.y, kotlin.math.sin(a).toFloat(), eps)
+    }
+  }
+
+  @Test
+  fun `snapToWall moves a wall item onto a parallel wall nearby and squares it up`() {
+    // Wall along X at z = 0; the room is on its +Z side (front of a yaw-0 item).
+    val wall = listOf(CollisionMath.Segment(-2f, 0f, 2f, 0f))
+    val snap = ArMath.snapToWall(0.5f, 0.12f, 0.1f, wall)!!
+    assertEquals(0.5f, snap.x, eps)
+    assertEquals(0f, snap.z, eps)
+    assertEquals(0f, snap.yawRadians, eps)
+    // Slightly behind the wall too.
+    assertEquals(0f, ArMath.snapToWall(0.5f, -0.05f, 0f, wall)!!.z, eps)
+  }
+
+  @Test
+  fun `snapToWall ignores walls that are far, turned or elsewhere`() {
+    val wall = listOf(CollisionMath.Segment(-2f, 0f, 2f, 0f))
+    assertNull(ArMath.snapToWall(0f, 0.4f, 0f, wall)) // 40 cm away
+    assertNull(ArMath.snapToWall(0f, 0.1f, 1.2f, wall)) // facing ~70 degrees off
+    assertNull(ArMath.snapToWall(3f, 0.1f, 0f, wall)) // 1 m past the detected end
+    // Picks the closer of two parallel walls.
+    val two = wall + CollisionMath.Segment(-2f, 0.2f, 2f, 0.2f)
+    assertEquals(0.2f, ArMath.snapToWall(0f, 0.15f, 0f, two)!!.z, eps)
+  }
+
+  @Test
+  fun `followStep moves floor items across the floor only, by a share of the gap`() {
+    val step = ArMath.followStep(Vec3(0f, 0f, 0f), Vec3(0.1f, 0.05f, -0.2f), 0f, isWall = false, gain = 0.5f, deadband = 0.002f)
+    assertEquals(Vec3(0.05f, 0f, -0.1f), step)
+    // Within the dead-band: no move.
+    assertEquals(Vec3(0f, 0f, 0f), ArMath.followStep(Vec3(0f, 0f, 0f), Vec3(0.001f, 0f, 0f), 0f, false, 0.5f, 0.002f))
+  }
+
+  @Test
+  fun `followStep moves wall items only along their wall`() {
+    // Facing +Z (wall in the X/Y plane): the gap off the wall (Z) is left to the wall refinement.
+    val step = ArMath.followStep(Vec3(0f, 1.5f, 0f), Vec3(0.2f, 1.6f, 0.08f), 0f, isWall = true, gain = 1f, deadband = 0.002f)
+    assertEquals(0.2f, step.x, eps)
+    assertEquals(0.1f, step.y, eps)
+    assertEquals(0f, step.z, eps)
+  }
+
+  @Test
+  fun `floorFromSamples takes the median of hits that landed under the item`() {
+    val expected = listOf(Vec3(0f, 0.03f, 0f), Vec3(0.3f, 0.03f, 0f), Vec3(0f, 0.03f, 0.3f), Vec3(0.3f, 0.03f, 0.3f), Vec3(0.15f, 0.03f, 0.15f))
+    val hits = listOf(
+      Vec3(0f, 0.001f, 0f),
+      Vec3(0.3f, -0.002f, 0.01f),
+      Vec3(0f, 0.002f, 0.3f),
+      Vec3(0.9f, 0.45f, 0.4f), // a real table in the way: elsewhere and too high
+      null, // no depth there
+    )
+    assertEquals(0.001f, ArMath.floorFromSamples(expected, hits, maxHorizontal = 0.12f, maxOffset = 0.15f, minCount = 3)!!, eps)
+    // Not enough good hits.
+    assertNull(ArMath.floorFromSamples(expected, hits, 0.12f, 0.15f, minCount = 4))
+  }
 }

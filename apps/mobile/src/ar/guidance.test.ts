@@ -11,9 +11,18 @@ describe('getGuidance', () => {
     [{ floorCount: 0 }, /floor and move/],
     [{}, /tap Place/],
     [{ isPlacing: true }, /Loading/],
-    [{ itemCount: 2 }, /Drag to move/],
+    [{ itemCount: 2 }, /tap Place/],
   ])('%o -> %s', (override, expected) => {
     expect(getGuidance({ ...ready, ...override })).toMatch(expected);
+  });
+
+  it.each<[Partial<GuidanceInput>, RegExp]>([
+    [{ itemCount: 0 }, /Tap Add/],
+    [{ itemCount: 2 }, /Tap an item/],
+    [{ itemCount: 2, selectedSurface: 'floor' }, /Twist to rotate · Double-tap to delete/],
+    [{ itemCount: 2, selectedSurface: 'wall' }, /^Arrows or drag to move it · Double-tap/],
+  ])('arranging (nothing to place) %o -> %s', (override, expected) => {
+    expect(getGuidance({ ...ready, surface: null, ...override })).toMatch(expected);
   });
 });
 
@@ -26,7 +35,7 @@ describe('wall art', () => {
   it.each<[Partial<GuidanceInput>, RegExp]>([
     [{ wallCount: 0 }, /1-2 m from the wall/],
     [{}, /should hang/],
-    [{ itemCount: 1 }, /along the wall/],
+    [{ itemCount: 1 }, /should hang/],
     [{ tracking: 'limited' }, /scan the room/],
   ])('guidance %o -> %s', (override, expected) => {
     expect(getGuidance({ ...readyWall, ...override })).toMatch(expected);
@@ -53,6 +62,10 @@ describe('canPlace', () => {
     expect(canPlace({ ...ready, floorCount: 0 })).toBe(false);
     expect(canPlace({ ...ready, isPlacing: true })).toBe(false);
   });
+
+  it('needs something to place', () => {
+    expect(canPlace({ ...ready, surface: null })).toBe(false);
+  });
 });
 
 describe('messages', () => {
@@ -66,6 +79,8 @@ describe('messages', () => {
     expect(errorMessage({ code: 'MODEL_LOAD_FAILED', message: 'x' })).toMatch(/download/);
     expect(errorMessage({ code: 'PLACEMENT_BLOCKED', message: 'x' })).toMatch(/free area/);
     expect(errorMessage({ code: 'SOMETHING_NEW', message: 'Native says hi' })).toBe('Native says hi');
+    expect(errorMessage({ code: 'CLOUD_ANCHOR_LOW_QUALITY', message: '' })).toMatch(/walk a few steps/);
+    expect(errorMessage({ code: 'CLOUD_ANCHOR_NOT_AUTHORIZED', message: '' })).toMatch(/not set up/);
   });
 
   it('reads codes from rejected native promises', () => {

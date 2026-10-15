@@ -419,6 +419,7 @@ def main():
     chair = finish(seat, back, seat_welts + [back_welt], seat_box)
     # AO at 1K: it is soft, low-frequency shading; 2K only added ~0.7 MB.
     mk.bake_ao(chair, os.path.join(build_dir, "chair_ao.jpg"), size=1024)
+    mk.contact_shadow(build_dir)
     mk.export(directory)
     mk.render_previews(directory, build_dir, distance=2.4, target_z=0.40)
     print("REPORT done")

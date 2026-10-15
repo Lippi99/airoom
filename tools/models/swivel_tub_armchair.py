@@ -319,6 +319,7 @@ def main():
         P.seat_top += errors["seat"]
 
     mk.check_and_report(mins, maxs, tris, cushion_max[2])
+    mk.contact_shadow(build_dir)
     mk.export(directory)
     mk.render_previews(directory, build_dir)
     print("REPORT done")

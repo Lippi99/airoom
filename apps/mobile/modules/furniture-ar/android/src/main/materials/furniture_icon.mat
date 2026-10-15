@@ -1,0 +1,109 @@
+// On-scene controls drawn on the selected item: move arrows around it and the delete (trash)
+// button. Procedural (signed distance shapes), so they stay sharp at any distance and need no
+// texture. Shapes are laid out in the quad's own model space, not its UVs, so they point the
+// same way whatever UV layout the quad geometry has.
+//
+// Drawn on top of everything (no depth test): an arrow behind a sofa must still be reachable.
+//
+// Compile (Filament matc, material version 68):
+//   matc -p mobile -a opengl -a vulkan -o ../assets/materials/furniture_icon.filamat furniture_icon.mat
+
+material {
+    name : furniture_icon,
+    shadingModel : unlit,
+    blending : transparent,
+    transparency : default,
+    depthWrite : false,
+    depthCulling : false,
+    culling : none,
+    parameters : [
+        {
+            // 0 = move arrow (pointing to model-space +X), 1 = trash button.
+            type : int,
+            name : kind
+        },
+        {
+            // Plane the quad lies in: 0 = XZ (flat on the floor), 1 = XY (upright).
+            type : int,
+            name : plane
+        },
+        {
+            // Half the quad's side, meters (model space -> -1..1).
+            type : float,
+            name : halfSize
+        },
+        {
+            type : float,
+            name : opacity
+        }
+    ],
+    variables : [
+        localPosition
+    ]
+}
+
+vertex {
+    void materialVertex(inout MaterialVertexInputs material) {
+        material.localPosition = getPosition();
+    }
+}
+
+fragment {
+    float boxDistance(vec2 p, vec2 center, vec2 halfSize) {
+        vec2 q = abs(p - center) - halfSize;
+        return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0);
+    }
+
+    // Distance to a triangle (negative inside).
+    float triangleDistance(vec2 p, vec2 a, vec2 b, vec2 c) {
+        vec2 e0 = b - a, e1 = c - b, e2 = a - c;
+        vec2 v0 = p - a, v1 = p - b, v2 = p - c;
+        vec2 pq0 = v0 - e0 * clamp(dot(v0, e0) / dot(e0, e0), 0.0, 1.0);
+        vec2 pq1 = v1 - e1 * clamp(dot(v1, e1) / dot(e1, e1), 0.0, 1.0);
+        vec2 pq2 = v2 - e2 * clamp(dot(v2, e2) / dot(e2, e2), 0.0, 1.0);
+        float s = sign(e0.x * e2.y - e0.y * e2.x);
+        vec2 d = min(min(vec2(dot(pq0, pq0), s * (v0.x * e0.y - v0.y * e0.x)),
+                         vec2(dot(pq1, pq1), s * (v1.x * e1.y - v1.y * e1.x))),
+                         vec2(dot(pq2, pq2), s * (v2.x * e2.y - v2.y * e2.x)));
+        return -sqrt(d.x) * sign(d.y);
+    }
+
+    // Coverage (0..1) of a shape from its distance, anti-aliased over one pixel.
+    float fill(float d) {
+        float aa = max(fwidth(d), 1e-4);
+        return 1.0 - smoothstep(-aa, aa, d);
+    }
+
+    void material(inout MaterialInputs material) {
+        prepareMaterial(material);
+        vec3 lp = variable_localPosition.xyz;
+        vec2 p = (materialParams.plane == 0 ? lp.xz : lp.xy) / materialParams.halfSize;
+
+        float disc = length(p) - 0.94;
+        float ring = abs(length(p) - 0.94) - 0.05;
+        vec3 color;
+        float alpha;
+        if (materialParams.kind == 0) {
+            // Arrow: white, on a dark translucent disc with a light rim.
+            float head = triangleDistance(p, vec2(0.62, 0.0), vec2(-0.02, 0.5), vec2(-0.02, -0.5));
+            float shaft = boxDistance(p, vec2(-0.3, 0.0), vec2(0.3, 0.14));
+            float glyph = fill(min(head, shaft));
+            float background = fill(disc);
+            color = mix(vec3(0.08), vec3(1.0), max(glyph, fill(ring) * 0.6));
+            alpha = max(background * 0.55, max(glyph, fill(ring) * 0.6));
+        } else {
+            // Trash can: white on a solid red disc.
+            float body = boxDistance(p, vec2(0.0, -0.17), vec2(0.27, 0.33)) - 0.04;
+            float lid = boxDistance(p, vec2(0.0, 0.27), vec2(0.38, 0.045));
+            float knob = boxDistance(p, vec2(0.0, 0.37), vec2(0.11, 0.06));
+            float slots = min(min(boxDistance(p, vec2(-0.12, -0.17), vec2(0.035, 0.22)),
+                                  boxDistance(p, vec2(0.0, -0.17), vec2(0.035, 0.22))),
+                                  boxDistance(p, vec2(0.12, -0.17), vec2(0.035, 0.22)));
+            float glyph = fill(min(min(max(body, -slots), lid), knob));
+            color = mix(vec3(0.80, 0.16, 0.13), vec3(1.0), glyph);
+            alpha = fill(disc);
+        }
+        alpha *= materialParams.opacity;
+        material.baseColor = vec4(color * alpha, alpha); // premultiplied
+    }
+}

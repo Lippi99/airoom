@@ -23,6 +23,9 @@ dependencies {
   implementation 'io.github.sceneview:arsceneview:2.3.4'
   // ComponentActivity / Lifecycle for ARSceneView; SceneView keeps it off our compile classpath.
   implementation 'androidx.activity:activity:1.8.2'
+  // ARCore Cloud Anchors "keyless" authorization (Google Play services + an Android OAuth
+  // client in Google Cloud): needed for anchors kept longer than 1 day.
+  implementation 'com.google.android.gms:play-services-auth-base:18.0.10'
 
   testImplementation 'junit:junit:4.13.2'
   // Real org.json for JVM tests (Android's is a stub there); reads collision-cases.json.

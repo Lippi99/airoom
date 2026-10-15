@@ -1,4 +1,4 @@
-import type { Dimensions, FurnitureCategory, RecordedClickPlatform } from '@airoom/shared';
+import type { Dimensions, FurnitureCategory, RecordedClickPlatform, ScenePose } from '@airoom/shared';
 
 export interface Product {
   id: string;
@@ -40,4 +40,21 @@ export interface ClickEvent {
   timestamp: Date;
   platform: RecordedClickPlatform;
   sessionId?: string;
+}
+
+/** A named arrangement of products saved from the AR view (see ScenePose in shared). */
+export interface Scene {
+  id: string;
+  name: string;
+  /** `items[0]` is the reference item: the others' poses are relative to it. */
+  items: SceneItem[];
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface SceneItem {
+  productId: string;
+  pose: ScenePose;
+  /** Cloud anchor hosted at this item's own pose (see SceneAnchor in shared). */
+  anchor?: { cloudAnchorId: string; expiresAt: Date };
 }

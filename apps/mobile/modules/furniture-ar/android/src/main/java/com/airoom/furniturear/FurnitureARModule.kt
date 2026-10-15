@@ -39,6 +39,7 @@ class FurnitureARModule : Module() {
         "onItemSelected",
         "onPlacementBlocked",
         "onItemTapped",
+        "onItemRemoved",
         "onError",
       )
 
@@ -60,6 +61,22 @@ class FurnitureARModule : Module() {
 
       AsyncFunction("captureSnapshot") { view: FurnitureARView, promise: Promise ->
         view.captureSnapshot(promise)
+      }.runOnQueue(Queues.MAIN)
+
+      AsyncFunction("getPlacedItems") { view: FurnitureARView, promise: Promise ->
+        view.getPlacedItems(promise)
+      }.runOnQueue(Queues.MAIN)
+
+      AsyncFunction("hostItemAnchor") { view: FurnitureARView, instanceId: String, promise: Promise ->
+        view.hostItemAnchor(instanceId, promise)
+      }.runOnQueue(Queues.MAIN)
+
+      AsyncFunction("resolveCloudAnchor") { view: FurnitureARView, cloudAnchorId: String, promise: Promise ->
+        view.resolveCloudAnchor(cloudAnchorId, promise)
+      }.runOnQueue(Queues.MAIN)
+
+      AsyncFunction("stopResolvingCloudAnchors") { view: FurnitureARView, promise: Promise ->
+        view.stopResolvingCloudAnchors(promise)
       }.runOnQueue(Queues.MAIN)
 
       OnViewDestroys { view: FurnitureARView ->

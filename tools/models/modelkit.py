@@ -15,6 +15,9 @@ import bpy
 import numpy as np
 
 SIZE_TOLERANCE_M = 0.002
+# Name of the baked contact-shadow quad; the app looks for a glTF node with this name and
+# then hides its own generic shadow (furniture-ar FurnitureARView.BAKED_SHADOW_NODE).
+CONTACT_SHADOW_NAME = "ContactShadow"
 
 
 def out_dir() -> str:
@@ -555,6 +558,85 @@ def bake_ao(obj, path, size=1024, samples=64, distance=0.3):
     return image
 
 
+def contact_shadow(build_dir, size=512, padding=0.3, distance=0.4, samples=256, strength=0.85, lift=0.0015):
+    """Bakes the model's contact shadow onto a quad on the floor under it, exported in the GLB.
+
+    The darkness is the ambient occlusion the model casts on the floor (Cycles AO bake with the
+    model as occluder): darkest right under each leg, soft under the seat, fading out around it.
+    That is what makes furniture look like it stands on the floor; the app's generic soft
+    rectangle can't show legs. The quad is unlit, black, see-through (glTF KHR_materials_unlit,
+    alphaMode BLEND), `lift` above the floor (no z-fighting with it), and its alpha fades to 0
+    toward its border. It is hidden in the previews/thumbnail (see preview_grounding.png) and
+    left out of the USDZ (RealityKit adds its own grounding shadows).
+    """
+    mins, maxs, _ = evaluated_bounds()
+    width = float(maxs[0] - mins[0]) + 2 * padding
+    depth = float(maxs[1] - mins[1]) + 2 * padding
+    bpy.ops.mesh.primitive_plane_add(size=1, location=((mins[0] + maxs[0]) / 2, (mins[1] + maxs[1]) / 2, lift))
+    plane = bpy.context.active_object
+    plane.name = CONTACT_SHADOW_NAME
+    plane.scale = (width, depth, 1)
+    bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
+
+    ao_image = bpy.data.images.new("ContactShadowAO", width=size, height=size, alpha=False, float_buffer=True)
+    ao_image.colorspace_settings.name = "Non-Color"
+    mat = bpy.data.materials.new(CONTACT_SHADOW_NAME)
+    mat.use_nodes = True
+    nodes, links = mat.node_tree.nodes, mat.node_tree.links
+    bake_target = nodes.new("ShaderNodeTexImage")
+    bake_target.image = ao_image
+    nodes.active = bake_target
+    plane.data.materials.append(mat)
+
+    bpy.ops.object.select_all(action="DESELECT")
+    plane.select_set(True)
+    bpy.context.view_layer.objects.active = plane
+    scene = bpy.context.scene
+    previous_engine = scene.render.engine
+    scene.render.engine = "CYCLES"
+    scene.cycles.samples = samples
+    if scene.world is None:
+        scene.world = bpy.data.worlds.new("BakeWorld")
+    scene.world.light_settings.distance = distance
+    bpy.ops.object.bake(type="AO", margin=4)
+    scene.render.engine = previous_engine
+
+    # Rows are V (the quad's Y = depth), columns U (X = width).
+    ao = np.array(ao_image.pixels[:], dtype=np.float64).reshape(size, size, 4)[..., 0]
+    darkness = blur_wrap(np.clip(1.0 - ao, 0.0, 1.0), passes=2)  # bake noise out
+    t = (np.arange(size) + 0.5) / size
+    border = np.minimum((np.minimum(t, 1 - t) * depth)[:, None], (np.minimum(t, 1 - t) * width)[None, :])
+    alpha = np.clip(strength * darkness * smoothstep(0.0, 0.6 * padding, border), 0.0, 1.0)
+    rgba = np.zeros((size, size, 4), dtype=np.float32)
+    rgba[..., 3] = alpha
+    shadow_image = bpy.data.images.new(CONTACT_SHADOW_NAME, width=size, height=size, alpha=True)
+    shadow_image.pixels.foreach_set(rgba.ravel())
+    path = os.path.join(build_dir, "contact_shadow.png")
+    shadow_image.filepath_raw = path
+    shadow_image.file_format = "PNG"
+    shadow_image.save()
+
+    # Unlit and see-through: the glTF exporter reads Mix(Transparent, color) with the alpha as
+    # the factor as KHR_materials_unlit with alphaMode BLEND.
+    nodes.clear()
+    output = nodes.new("ShaderNodeOutputMaterial")
+    tex = nodes.new("ShaderNodeTexImage")
+    tex.image = shadow_image
+    transparent = nodes.new("ShaderNodeBsdfTransparent")
+    mix = nodes.new("ShaderNodeMixShader")
+    links.new(tex.outputs["Alpha"], mix.inputs["Fac"])
+    links.new(transparent.outputs["BSDF"], mix.inputs[1])
+    links.new(tex.outputs["Color"], mix.inputs[2])
+    links.new(mix.outputs["Shader"], output.inputs["Surface"])
+    if hasattr(mat, "surface_render_method"):
+        mat.surface_render_method = "BLENDED"
+    plane.visible_shadow = False
+    plane.hide_render = True
+    print(f"REPORT contact shadow {width:.2f} x {depth:.2f} m, max alpha {alpha.max():.2f}, "
+          f"mean under model {alpha[size // 3: 2 * size // 3, size // 3: 2 * size // 3].mean():.2f}")
+    return plane
+
+
 # --- Checks, export, previews -------------------------------------------------------------
 
 
@@ -649,6 +731,18 @@ def render_previews(directory, build_dir, distance=2.0, target_z=0.40):
     # Close-up of the front corner (arm front, seat edge) to judge the materials.
     render_from(cam, (0.45, -0.95, 0.85), (0.18, -0.25, 0.48), os.path.join(build_dir, "preview_detail.png"))
 
+    # The baked contact shadow as the app shows it: the model casting no other shadow.
+    shadow = bpy.data.objects.get(CONTACT_SHADOW_NAME)
+    if shadow is not None:
+        casters = [o for o in bpy.context.scene.objects if o.type == "MESH" and o.name not in ("PreviewFloor", CONTACT_SHADOW_NAME)]
+        shadow.hide_render = False
+        for o in casters:
+            o.visible_shadow = False
+        render_from(cam, (0.8 * d, -0.9 * d, 0.6), (0, 0, 0.15), os.path.join(build_dir, "preview_grounding.png"))
+        shadow.hide_render = True
+        for o in casters:
+            o.visible_shadow = True
+
     scene = bpy.context.scene
     scene.render.resolution_x = scene.render.resolution_y = 800
     scene.render.image_settings.file_format = "JPEG"
@@ -673,6 +767,10 @@ def export(directory):
         export_materials="EXPORT",
     )
     usdz = os.path.join(directory, "model.usdz")
+    # RealityKit draws its own grounding shadows: no baked contact shadow in the USDZ.
+    shadow = bpy.data.objects.get(CONTACT_SHADOW_NAME)
+    if shadow is not None:
+        shadow.select_set(False)
     bpy.ops.wm.usd_export(
         filepath=usdz,
         selected_objects_only=True,
