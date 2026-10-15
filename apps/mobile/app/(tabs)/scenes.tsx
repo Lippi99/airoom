@@ -6,11 +6,12 @@ import { deleteScene, getProducts, getScenes } from '../../src/api/client';
 import { EmptyView, ErrorView, LoadingView } from '../../src/components/StateViews';
 import { colors, spacing } from '../../src/components/theme';
 import { useAsync } from '../../src/hooks/useAsync';
+import { buildShoppingList, formatTotals } from '../../src/utils/shoppingList';
 
 /** Saved AR scenes: open one to rebuild it in the room, or start a new one. */
 export default function ScenesScreen() {
   const scenes = useAsync((signal) => getScenes(signal), []);
-  // For thumbnails; scenes only store product ids.
+  // For thumbnails and totals; scenes only store product ids.
   const products = useAsync((signal) => getProducts({}, signal), []);
   const byId = useMemo(() => new Map((products.data ?? []).map((p) => [p.id, p])), [products.data]);
 
@@ -96,6 +97,8 @@ function SceneRow({
     })
     .slice(0, 4);
   const count = scene.items.length;
+  // Empty until the catalog has loaded.
+  const total = formatTotals(buildShoppingList(scene.items.map((i) => i.productId), products).totals);
   return (
     <Pressable
       accessibilityRole="button"
@@ -113,8 +116,9 @@ function SceneRow({
         <Text style={styles.name} numberOfLines={1}>
           {scene.name}
         </Text>
-        <Text style={styles.meta}>
-          {count} item{count === 1 ? '' : 's'} · {new Date(scene.updatedAt).toLocaleDateString()}
+        <Text style={styles.meta} numberOfLines={1}>
+          {count} item{count === 1 ? '' : 's'}
+          {total ? ` · ${total}` : ''} · {new Date(scene.updatedAt).toLocaleDateString()}
         </Text>
       </View>
       <Pressable accessibilityRole="button" accessibilityLabel={`Delete ${scene.name}`} onPress={onDelete} hitSlop={10}>

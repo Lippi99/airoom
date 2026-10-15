@@ -1,11 +1,12 @@
-import { Alert, Image, Linking, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { router, Stack, useLocalSearchParams } from 'expo-router';
 import type { ProductDto } from '@airoom/shared';
-import { ApiError, getBuyUrl } from '../../src/api/client';
+import { ApiError } from '../../src/api/client';
 import { ErrorView, LoadingView } from '../../src/components/StateViews';
 import { colors, spacing } from '../../src/components/theme';
 import { useProduct } from '../../src/hooks/useCatalog';
 import { useFavorites } from '../../src/store/favorites';
+import { openBuyPage } from '../../src/utils/buy';
 import { formatDimensions, formatPrice } from '../../src/utils/format';
 
 export default function ProductScreen() {
@@ -27,14 +28,6 @@ export default function ProductScreen() {
 function ProductDetails({ product }: { product: ProductDto }) {
   const { isFavorite, toggleFavorite } = useFavorites();
   const saved = isFavorite(product.id);
-
-  const buy = async () => {
-    try {
-      await Linking.openURL(getBuyUrl(product.id));
-    } catch {
-      Alert.alert('Could not open the store', 'Please try again in a moment.');
-    }
-  };
 
   return (
     <>
@@ -70,12 +63,12 @@ function ProductDetails({ product }: { product: ProductDto }) {
         <View style={styles.actions}>
           <Pressable
             accessibilityRole="button"
-            onPress={() => toggleFavorite(product)}
+            onPress={() => toggleFavorite(product.id)}
             style={[styles.button, styles.secondary]}
           >
             <Text style={styles.secondaryText}>{saved ? 'Saved ✓' : 'Save'}</Text>
           </Pressable>
-          <Pressable accessibilityRole="button" onPress={buy} style={[styles.button, styles.primary]}>
+          <Pressable accessibilityRole="button" onPress={() => void openBuyPage(product.id)} style={[styles.button, styles.primary]}>
             <Text style={styles.primaryText}>Buy at {product.retailer.name}</Text>
           </Pressable>
         </View>

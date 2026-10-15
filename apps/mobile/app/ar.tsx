@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
 import { ActivityIndicator, Alert, Image, Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 import { router, Stack, useLocalSearchParams, useNavigation } from 'expo-router';
+import * as Sharing from 'expo-sharing';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { isWallMounted, type ProductDto, type SceneAnchor, type SceneDto } from '@airoom/shared';
 import {
@@ -10,17 +11,20 @@ import {
   type FurnitureARViewRef,
   type TrackingState,
 } from '../modules/furniture-ar';
-import { ApiError, createScene, getBuyUrl, getProducts, getScene, updateScene } from '../src/api/client';
+import { ApiError, createScene, getProducts, getScene, updateScene } from '../src/api/client';
 import { blockedMessage, canPlace, errorCodeOf, errorMessage, getGuidance, surfaceFor } from '../src/ar/guidance';
 import { fitReference, referenceFromItem, toSceneItems, toWorldPose, type AnchorMatch } from '../src/ar/layout';
 import { ProductPickerSheet } from '../src/components/ProductPickerSheet';
 import { SaveSceneDialog } from '../src/components/SaveSceneDialog';
+import { ShoppingListSheet } from '../src/components/ShoppingListSheet';
 import { ErrorView, LoadingView } from '../src/components/StateViews';
 import { colors, spacing } from '../src/components/theme';
 import { useARAvailability } from '../src/hooks/useARAvailability';
 import { useAsync } from '../src/hooks/useAsync';
 import { newInstanceId, useSceneState } from '../src/store/scene';
+import { openBuyPage } from '../src/utils/buy';
 import { formatPrice } from '../src/utils/format';
+import { buildShoppingList, formatTotals } from '../src/utils/shoppingList';
 
 const TOAST_MS = 2500;
 /**
@@ -149,8 +153,10 @@ function ARSession({
     savedScene ? { id: savedScene.id, name: savedScene.name } : null,
   );
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [listOpen, setListOpen] = useState(false);
   const [saveOpen, setSaveOpen] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [sharing, setSharing] = useState(false);
   const [saveProgress, setSaveProgress] = useState<string | null>(null);
   const [restoring, setRestoring] = useState(false);
   /** Changed since the last save (placed, removed, or touched: moves are not reported). */
@@ -168,7 +174,17 @@ function ARSession({
     toastTimer.current = setTimeout(() => setToast(null), TOAST_MS + message.length * 25);
   }, []);
   useEffect(() => () => clearTimeout(toastTimer.current), []);
-  useEffect(() => () => clearTimeout(restoreRun.current?.timer), []);
+  // Leaving the screen ends a restore still looking for anchors: its last pending lookups
+  // (cancelled with the view) must not run `finish` on a view that no longer exists.
+  useEffect(
+    () => () => {
+      const run = restoreRun.current;
+      if (!run) return;
+      run.finished = true;
+      clearTimeout(run.timer);
+    },
+    [],
+  );
 
   // Leaving with unsaved changes (close button, back gesture, hardware back) asks first.
   useEffect(
@@ -198,6 +214,14 @@ function ARSession({
   const selectedItem = scene.items.find((i) => i.instanceId === scene.selectedId);
   const selectedProduct = selectedItem ? byId.get(selectedItem.productId) : undefined;
   const busy = scene.placingId !== null || restoring;
+
+  // What the scene costs. A saved scene still coming back counts whole (its list and total
+  // show from the start); after that, what is placed.
+  const listProductIds = useMemo(
+    () => (pendingScene ? pendingScene.items : scene.items).map((i) => i.productId),
+    [pendingScene, scene.items],
+  );
+  const shopping = useMemo(() => buildShoppingList(listProductIds, byId), [listProductIds, byId]);
 
   const guidanceInput = {
     surface,
@@ -302,7 +326,8 @@ function ARSession({
       if (run.finished) return;
       run.finished = true;
       clearTimeout(run.timer);
-      void ar.stopResolvingCloudAnchors();
+      // Best effort: nothing to stop once the view is gone.
+      ar.stopResolvingCloudAnchors().catch(() => undefined);
       const reference = fitReference(run.matches);
       if (!reference) {
         restoreRun.current = null;
@@ -352,7 +377,7 @@ function ARSession({
 
   /** Stops looking for the saved spots and places the scene where the user points instead. */
   const placeHereInstead = () => {
-    void arRef.current?.stopResolvingCloudAnchors();
+    arRef.current?.stopResolvingCloudAnchors().catch(() => undefined);
     setRestoreMode('aim');
   };
 
@@ -511,6 +536,30 @@ function ARSession({
     }
   };
 
+  /** Shares a photo of the room with the furniture (the selection and arrows are left out). */
+  const sharePhoto = async () => {
+    const ar = arRef.current;
+    if (!ar) return;
+    setSharing(true);
+    try {
+      if (!(await Sharing.isAvailableAsync())) {
+        showToast("Sharing isn't available on this device.");
+        return;
+      }
+      const { uri } = await ar.captureSnapshot();
+      await Sharing.shareAsync(uri, {
+        mimeType: 'image/jpeg',
+        UTI: 'public.jpeg',
+        dialogTitle: `Share “${savedInfo?.name ?? 'New scene'}”`,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '';
+      showToast(`Couldn't share the photo. ${errorMessage({ code: errorCodeOf(error), message })}`);
+    } finally {
+      setSharing(false);
+    }
+  };
+
   const removeSelected = async () => {
     const id = scene.selectedId;
     if (!id) return;
@@ -545,6 +594,10 @@ function ARSession({
   const itemCount = scene.items.length;
   // Not while a saved scene is still coming back (saving would keep only part of it).
   const canSave = itemCount > 0 && !busy && !findingAnchors && !saving;
+  const canShare = itemCount > 0 && !sharing && !saving;
+  const hasList = shopping.lines.length > 0;
+  const total = formatTotals(shopping.totals);
+  const listSummary = `${shopping.itemCount} item${shopping.itemCount === 1 ? '' : 's'}${total ? ` · ${total}` : ''}`;
 
   return (
     <View style={styles.screen}>
@@ -582,14 +635,35 @@ function ARSession({
         <Pressable accessibilityRole="button" accessibilityLabel="Close" onPress={() => router.back()} style={styles.roundButton}>
           <Text style={styles.roundButtonText}>✕</Text>
         </Pressable>
-        <View style={styles.titlePill}>
+        {/* Name, item count and total; tap for the shopping list. */}
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`Shopping list: ${listSummary}`}
+          accessibilityState={{ disabled: !hasList }}
+          disabled={!hasList}
+          onPress={() => setListOpen(true)}
+          style={({ pressed }) => [styles.titlePill, pressed && styles.pillPressed]}
+        >
           <Text style={styles.titleText} numberOfLines={1}>
             {title}
           </Text>
-          <Text style={styles.titleCount}>
-            {itemCount} item{itemCount === 1 ? '' : 's'}
+          <Text style={styles.titleMeta} numberOfLines={1}>
+            {listSummary}
+            {hasList ? '  ›' : ''}
           </Text>
-        </View>
+        </Pressable>
+        {itemCount > 0 && (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Share a photo"
+            accessibilityState={{ disabled: !canShare, busy: sharing }}
+            disabled={!canShare}
+            onPress={() => void sharePhoto()}
+            style={[styles.sharePill, !canShare && styles.actionDisabled]}
+          >
+            {sharing ? <ActivityIndicator color="#fff" size="small" /> : <Text style={styles.shareText}>Share</Text>}
+          </Pressable>
+        )}
         <Pressable
           accessibilityRole="button"
           accessibilityState={{ disabled: !canSave }}
@@ -637,7 +711,7 @@ function ARSession({
             </Pressable>
             <Pressable
               accessibilityRole="button"
-              onPress={() => Linking.openURL(getBuyUrl(selectedProduct.id))}
+              onPress={() => void openBuyPage(selectedProduct.id)}
               style={[styles.smallButton, styles.smallButtonPrimary]}
             >
               <Text style={styles.smallButtonPrimaryText}>Buy</Text>
@@ -698,6 +772,7 @@ function ARSession({
         onSave={save}
         onCancel={() => setSaveOpen(false)}
       />
+      <ShoppingListSheet visible={listOpen} sceneName={title} list={shopping} onClose={() => setListOpen(false)} />
     </View>
   );
 }
@@ -796,16 +871,18 @@ const styles = StyleSheet.create({
   roundButtonText: { color: '#fff', fontSize: 18 },
   titlePill: {
     flex: 1,
-    flexDirection: 'row',
-    alignItems: 'baseline',
-    gap: spacing.sm,
+    minHeight: 40,
+    justifyContent: 'center',
     backgroundColor: overlay,
     borderRadius: 20,
     paddingHorizontal: 14,
-    paddingVertical: 9,
+    paddingVertical: 4,
   },
-  titleText: { flexShrink: 1, color: '#fff', fontWeight: '600' },
-  titleCount: { color: 'rgba(255,255,255,0.7)', fontSize: 13 },
+  pillPressed: { opacity: 0.8 },
+  titleText: { color: '#fff', fontWeight: '600' },
+  titleMeta: { color: 'rgba(255,255,255,0.75)', fontSize: 12 },
+  sharePill: { minWidth: 64, alignItems: 'center', backgroundColor: overlay, borderRadius: 20, paddingHorizontal: 14, paddingVertical: 10 },
+  shareText: { color: '#fff', fontWeight: '600' },
   savePill: { backgroundColor: colors.accent, borderRadius: 20, paddingHorizontal: 16, paddingVertical: 10 },
   saveText: { color: colors.accentText, fontWeight: '700' },
   reticleWrap: { ...StyleSheet.absoluteFill, alignItems: 'center', justifyContent: 'center' },
